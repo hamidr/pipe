@@ -147,6 +147,38 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
+    /// Insert a monitoring point that reports element counts and errors.
+    ///
+    /// The callback receives a [`MeterStats`](crate::meter::MeterStats)
+    /// snapshot after each chunk, on completion, and on error.
+    pub fn meter_with(
+        self,
+        name: impl Into<String>,
+        on_chunk: impl Fn(&crate::meter::MeterStats) + Send + Sync + 'static,
+    ) -> Self {
+        let parent = self.factory;
+        let name = name.into();
+        let on_chunk: std::sync::Arc<dyn Fn(&crate::meter::MeterStats) + Send + Sync> =
+            std::sync::Arc::new(on_chunk);
+        Self::from_factory(move || {
+            let child = parent();
+            let name = name.clone();
+            let on_chunk = std::sync::Arc::clone(&on_chunk);
+            Box::new(crate::meter::PullMeter {
+                child,
+                name: name.clone(),
+                on_chunk: Box::new(move |s| on_chunk(s)),
+                stats: crate::meter::MeterStats {
+                    name,
+                    elements: 0,
+                    chunks: 0,
+                    completed: false,
+                    errored: false,
+                },
+            })
+        })
+    }
+
     /// Take the first `n` elements.
     pub fn take(self, n: usize) -> Self {
         let parent = self.factory;

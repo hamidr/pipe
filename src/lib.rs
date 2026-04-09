@@ -38,6 +38,7 @@
 
 pub mod cancel;
 pub mod channel;
+pub mod meter;
 pub mod io;
 pub mod operator;
 pub mod pipeline;
