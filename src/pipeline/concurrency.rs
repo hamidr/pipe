@@ -1,0 +1,168 @@
+//! Concurrency operators: prefetch, merge, broadcast, zip, partition.
+
+use std::sync::Arc;
+
+use crate::pull::{PullOperator, PullZip};
+
+use super::pull_ops::{BroadcastReceiver, GuardedPull, LazyFanOut, LazyPartition};
+use super::Pipe;
+
+impl<B: Send + 'static> Pipe<B> {
+    // ══════════════════════════════════════════════════════
+    // Concurrency
+    // ══════════════════════════════════════════════════════
+
+    /// Buffer up to `n` chunks ahead of the consumer.
+    ///
+    /// Spawns the upstream on a background task at materialization time.
+    /// Backpressure: the task awaits when the buffer is full.
+    /// Task is cancelled when Pipe is dropped.
+    pub fn prefetch(self, n: usize) -> Self {
+        let parent = self.factory;
+        Self::from_factory(move || {
+            let (tx, rx) = crate::channel::bounded::<B>(n);
+            let mut root = parent();
+            let handle = tokio::spawn(async move {
+                while let Ok(Some(chunk)) = root.next_chunk().await {
+                    if tx.send(chunk).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            Box::new(rx.with_abort(handle.abort_handle()))
+        })
+    }
+
+    /// Merge multiple pipes into one, interleaving in arrival order.
+    ///
+    /// Each source runs concurrently. Backpressure via bounded buffers.
+    /// Background tasks are cancelled when the merged Pipe is dropped.
+    pub fn merge(pipes: Vec<Pipe<B>>) -> Self {
+        if pipes.is_empty() {
+            return Pipe::empty();
+        }
+        if pipes.len() == 1 {
+            return pipes.into_iter().next().unwrap();
+        }
+
+        let factories: Vec<_> = pipes.into_iter().map(|p| p.factory).collect();
+        Self::from_factory(move || {
+            let (merged_tx, merged_rx) = crate::channel::bounded::<B>(factories.len());
+            let mut handles = Vec::with_capacity(factories.len());
+
+            for factory in &factories {
+                let tx = merged_tx.clone();
+                let mut root = factory();
+                let h = tokio::spawn(async move {
+                    while let Ok(Some(chunk)) = root.next_chunk().await {
+                        if tx.send(chunk).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                handles.push(h.abort_handle());
+            }
+            drop(merged_tx);
+
+            Box::new(GuardedPull {
+                inner: Box::new(merged_rx),
+                _guards: handles,
+            })
+        })
+    }
+
+    /// Merge this pipe with another, interleaving in arrival order.
+    ///
+    /// Shorthand for `Pipe::merge(vec![self, other])`.
+    pub fn merge_with(self, other: Pipe<B>) -> Self {
+        Pipe::merge(vec![self, other])
+    }
+
+    /// Fan-out: clone each element to `n` branches.
+    ///
+    /// Each branch has a bounded buffer. The source blocks if ANY branch
+    /// is full. Background task cancelled when ALL branches are dropped.
+    ///
+    /// Materialization is lazy — the source is not started until the
+    /// first branch is consumed.
+    pub fn broadcast(self, n: usize, buffer_size: usize) -> Vec<Pipe<B>>
+    where
+        B: Clone + Sync,
+    {
+        if n == 0 {
+            return vec![];
+        }
+        if n == 1 {
+            return vec![self];
+        }
+
+        // Shared state: initialized once when any branch first materializes.
+        // Each branch gets a pre-assigned index and takes its receiver.
+        let shared = Arc::new(LazyFanOut::new(n, buffer_size, self.factory));
+
+        (0..n)
+            .map(|idx| {
+                let shared = Arc::clone(&shared);
+                Pipe::from_factory(move || {
+                    let rx = shared.take_broadcast_receiver(idx);
+                    Box::new(BroadcastReceiver {
+                        rx,
+                        abort: Some(shared.abort_handle()),
+                    })
+                })
+            })
+            .collect()
+    }
+
+    /// Pair elements positionally with another pipe.
+    ///
+    /// Buffers leftover elements across chunk boundaries so no data is
+    /// lost when left and right chunks have different sizes.
+    pub fn zip<C: Send + 'static>(self, other: Pipe<C>) -> Pipe<(B, C)> {
+        let left = self.factory;
+        let right = other.factory;
+        Pipe::from_factory(move || Box::new(PullZip::new(left(), right())))
+    }
+
+    /// Hash-partition elements across N branches.
+    ///
+    /// Each element goes to exactly one branch: `key(&element) % n`.
+    /// No cloning — elements are moved. Each branch has a bounded buffer
+    /// of `buffer_size` chunks. Backpressure: source blocks if any branch
+    /// is full. Background task cancelled when all branches are dropped.
+    ///
+    /// Materialization is lazy — the source is not started until the
+    /// first branch is consumed.
+    ///
+    /// ```ignore
+    /// let partitions = pipe.partition(4, 2, |x| *x as u64);
+    /// // partitions[0] gets elements where key % 4 == 0
+    /// // partitions[1] gets elements where key % 4 == 1
+    /// // etc.
+    /// ```
+    pub fn partition(
+        self,
+        n: usize,
+        buffer_size: usize,
+        key: impl Fn(&B) -> u64 + Send + Sync + 'static,
+    ) -> Vec<Pipe<B>> {
+        if n == 0 {
+            return vec![];
+        }
+        if n == 1 {
+            return vec![self];
+        }
+
+        let shared = Arc::new(LazyPartition::new(n, buffer_size, self.factory, key));
+
+        (0..n)
+            .map(|idx| {
+                let shared = Arc::clone(&shared);
+                Pipe::from_factory(move || {
+                    let rx = shared.take_receiver(idx);
+                    Box::new(rx)
+                })
+            })
+            .collect()
+    }
+}
