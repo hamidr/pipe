@@ -46,9 +46,7 @@ impl<R> PullReader<R> {
 impl<R: AsyncRead + Unpin + Send + 'static> PullOperator<Vec<u8>> for PullReader<R> {
     fn next_chunk(&mut self) -> ChunkFut<'_, Vec<u8>> {
         Box::pin(async move {
-            let n = self.reader.read(&mut self.buf).await.map_err(|e| -> PipeError {
-                Box::new(e)
-            })?;
+            let n = self.reader.read(&mut self.buf).await?;
             if n == 0 {
                 Ok(None)
             } else {
@@ -75,17 +73,11 @@ where
     while let Some(chunk) = root.next_chunk().await? {
         for item in &chunk {
             let bytes = item.as_ref();
-            writer
-                .write_all(bytes)
-                .await
-                .map_err(|e| -> PipeError { Box::new(e) })?;
+            writer.write_all(bytes).await?;
             total += bytes.len() as u64;
         }
     }
-    writer
-        .flush()
-        .await
-        .map_err(|e| -> PipeError { Box::new(e) })?;
+    writer.flush().await?;
     Ok(total)
 }
 
