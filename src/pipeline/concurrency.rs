@@ -124,6 +124,40 @@ impl<B: Send + 'static> Pipe<B> {
         Pipe::from_factory(move || Box::new(PullZip::new(left(), right())))
     }
 
+    /// Run `background` concurrently with `self`, taking output only
+    /// from `self`. If the background pipe errors, the error propagates
+    /// to the main pipe. The background is cancelled when `self`
+    /// completes or is dropped.
+    pub fn concurrently(self, background: Pipe<B>) -> Self {
+        let main_factory = self.factory;
+        let bg_factory = background.factory;
+        Self::from_factory(move || {
+            // Channel for background errors
+            let (err_tx, err_rx) = tokio::sync::watch::channel::<Option<String>>(None);
+
+            let mut bg_root = bg_factory();
+            let bg_handle = tokio::spawn(async move {
+                loop {
+                    match bg_root.next_chunk().await {
+                        Ok(Some(_)) => {} // discard output
+                        Ok(None) => return,
+                        Err(e) => {
+                            let _ = err_tx.send(Some(e.to_string()));
+                            return;
+                        }
+                    }
+                }
+            });
+
+            let main_root = main_factory();
+            Box::new(super::pull_ops::PullConcurrently {
+                inner: main_root,
+                bg_error: err_rx,
+                abort: Some(bg_handle.abort_handle()),
+            })
+        })
+    }
+
     /// Zip with a custom combiner function instead of producing tuples.
     pub fn zip_with<C: Send + 'static, D: Send + 'static>(
         self,
