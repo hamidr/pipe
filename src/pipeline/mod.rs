@@ -1206,4 +1206,81 @@ mod tests {
         // At least 20ms for 3 elements at 10ms throttle (first is immediate)
         assert!(elapsed >= std::time::Duration::from_millis(20));
     }
+
+    // ── attempt / noneTerminate / zipWith / broadcastThrough ──
+
+    #[tokio::test]
+    async fn attempt_wraps_ok() {
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .attempt()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().all(|r| r.is_ok()));
+    }
+
+    #[tokio::test]
+    async fn attempt_catches_errors() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct FailAfterOne { yielded: bool }
+        impl PullOperator<i64> for FailAfterOne {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async move {
+                    if self.yielded { Err("boom".into()) }
+                    else { self.yielded = true; Ok(Some(vec![1])) }
+                })
+            }
+        }
+
+        let result = Pipe::from_pull_once(FailAfterOne { yielded: false })
+            .attempt()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result[0].is_ok());
+        assert!(result[1].is_err());
+    }
+
+    #[tokio::test]
+    async fn none_terminate_appends_none() {
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .none_terminate()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![Some(1), Some(2), Some(3), None]);
+    }
+
+    #[tokio::test]
+    async fn none_terminate_roundtrip() {
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .none_terminate()
+            .un_none_terminate()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn un_none_terminate_stops_at_none() {
+        let result = Pipe::from_iter(vec![Some(1), Some(2), None, Some(99)])
+            .un_none_terminate()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn zip_with_custom_combiner() {
+        let a = Pipe::from_iter(vec![1, 2, 3]);
+        let b = Pipe::from_iter(vec![10, 20, 30]);
+        let result = a.zip_with(b, |x, y| x + y).collect().await.unwrap();
+        assert_eq!(result, vec![11, 22, 33]);
+    }
+
 }
