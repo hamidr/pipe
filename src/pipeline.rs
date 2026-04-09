@@ -373,6 +373,102 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
+    /// Batch elements by count OR time, whichever triggers first.
+    ///
+    /// Collects up to `max_size` elements into a `Vec<B>`. If the
+    /// deadline elapses before the batch is full, flushes whatever
+    /// has accumulated. Spawns a background task at materialization.
+    pub fn chunks_timeout(
+        self,
+        max_size: usize,
+        timeout: std::time::Duration,
+    ) -> Pipe<Vec<B>> {
+        let parent = self.factory;
+        Pipe::from_factory(move || {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<B>>(2);
+            let mut root = parent();
+            let handle = tokio::spawn(async move {
+                let mut batch = Vec::with_capacity(max_size);
+                loop {
+                    let deadline = tokio::time::sleep(timeout);
+                    tokio::pin!(deadline);
+
+                    // Pull chunks until batch is full or deadline fires
+                    loop {
+                        // Flush any complete batches already buffered
+                        while batch.len() >= max_size {
+                            let ready = batch.drain(..max_size).collect();
+                            if tx.send(ready).await.is_err() { return; }
+                        }
+
+                        tokio::select! {
+                            biased;
+                            result = root.next_chunk() => {
+                                match result {
+                                    Ok(Some(chunk)) => {
+                                        batch.extend(chunk);
+                                        // Loop back to flush any full batches
+                                    }
+                                    Ok(None) => {
+                                        // Source exhausted — flush remainder
+                                        if !batch.is_empty() {
+                                            let _ = tx.send(std::mem::take(&mut batch)).await;
+                                        }
+                                        return;
+                                    }
+                                    Err(_) => return,
+                                }
+                            }
+                            _ = &mut deadline => {
+                                // Timer fired — flush partial batch
+                                if !batch.is_empty() {
+                                    if tx.send(std::mem::take(&mut batch)).await.is_err() { return; }
+                                    batch = Vec::with_capacity(max_size);
+                                }
+                                break; // Reset timer
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Wrap receiver as a PullOperator<Vec<B>>
+            struct ChunksTimeoutReceiver<B> {
+                rx: tokio::sync::mpsc::Receiver<Vec<B>>,
+                _abort: tokio::task::AbortHandle,
+            }
+            impl<B> Drop for ChunksTimeoutReceiver<B> {
+                fn drop(&mut self) { self._abort.abort(); }
+            }
+            impl<B: Send + 'static> PullOperator<Vec<B>> for ChunksTimeoutReceiver<B> {
+                fn next_chunk(&mut self) -> ChunkFut<'_, Vec<B>> {
+                    Box::pin(async move {
+                        match self.rx.recv().await {
+                            Some(batch) => Ok(Some(vec![batch])),
+                            None => Ok(None),
+                        }
+                    })
+                }
+            }
+
+            Box::new(ChunksTimeoutReceiver {
+                rx,
+                _abort: handle.abort_handle(),
+            })
+        })
+    }
+
+    /// Fail if a single pull takes longer than `duration`.
+    pub fn timeout(self, duration: std::time::Duration) -> Self {
+        let parent = self.factory;
+        Self::from_factory(move || {
+            Box::new(PullTimeout {
+                child: parent(),
+                duration,
+            })
+        })
+    }
+
     // ══════════════════════════════════════════════════════
     // Stream composition
     // ══════════════════════════════════════════════════════
@@ -815,6 +911,24 @@ impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracke
                     }
                 },
                 _ => Ok(None),
+            }
+        })
+    }
+}
+
+// ── Timeout ─────────────────────────────────────────
+
+struct PullTimeout<B: Send + 'static> {
+    child: Box<dyn PullOperator<B>>,
+    duration: std::time::Duration,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullTimeout<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match tokio::time::timeout(self.duration, self.child.next_chunk()).await {
+                Ok(result) => result,
+                Err(_) => Err(PipeError::Custom("timeout".into())),
             }
         })
     }
@@ -2125,5 +2239,82 @@ mod tests {
 
         assert_eq!(result, Some(10));
         assert!(released.load(Ordering::SeqCst));
+    }
+
+    // ── chunks_timeout / timeout ──────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chunks_timeout_flushes_by_count() {
+        let result = Pipe::from_iter(1..=7)
+            .chunks_timeout(3, std::time::Duration::from_secs(10))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![vec![1, 2, 3], vec![4, 5, 6], vec![7]]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chunks_timeout_flushes_by_time() {
+        // Slow source: one element, then long pause
+        // Timer should flush the partial batch
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct SlowSource {
+            sent: bool,
+        }
+        impl PullOperator<i64> for SlowSource {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async move {
+                    if self.sent {
+                        // Hang forever — simulate a slow source
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        Ok(None)
+                    } else {
+                        self.sent = true;
+                        Ok(Some(vec![42]))
+                    }
+                })
+            }
+        }
+
+        let result = Pipe::from_pull_once(SlowSource { sent: false })
+            .chunks_timeout(100, std::time::Duration::from_millis(50))
+            .take(1)
+            .collect()
+            .await
+            .unwrap();
+        // Should get partial batch [42] flushed by timer
+        assert_eq!(result, vec![vec![42]]);
+    }
+
+    #[tokio::test]
+    async fn timeout_passes_when_fast() {
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .timeout(std::time::Duration::from_secs(10))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn timeout_errors_when_slow() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct Hang;
+        impl PullOperator<i64> for Hang {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    Ok(Some(vec![1]))
+                })
+            }
+        }
+
+        let result = Pipe::from_pull_once(Hang)
+            .timeout(std::time::Duration::from_millis(10))
+            .collect()
+            .await;
+        assert!(result.is_err());
     }
 }
