@@ -62,6 +62,7 @@ pub(crate) struct PullSource<B> {
 }
 
 impl<B> PullSource<B> {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(items: Vec<B>) -> Self {
         if items.is_empty() {
             Self { items: None }
@@ -78,6 +79,37 @@ impl<B> PullSource<B> {
 impl<B: Send + 'static> PullOperator<B> for PullSource<B> {
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
         Box::pin(async move { Ok(self.items.take()) })
+    }
+}
+
+// ── ArcSource (shared, cloneable) ─────────────────────
+
+const ARC_SOURCE_CHUNK_SIZE: usize = 256;
+
+/// Source backed by `Arc<[B]>` — clones elements in chunks on demand
+/// instead of cloning the entire dataset upfront.
+pub(crate) struct ArcSource<B> {
+    data: std::sync::Arc<[B]>,
+    offset: usize,
+}
+
+impl<B> ArcSource<B> {
+    pub(crate) fn new(data: std::sync::Arc<[B]>) -> Self {
+        Self { data, offset: 0 }
+    }
+}
+
+impl<B: Clone + Send + Sync + 'static> PullOperator<B> for ArcSource<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            if self.offset >= self.data.len() {
+                return Ok(None);
+            }
+            let end = (self.offset + ARC_SOURCE_CHUNK_SIZE).min(self.data.len());
+            let chunk: Vec<B> = self.data[self.offset..end].iter().cloned().collect();
+            self.offset = end;
+            Ok(Some(chunk))
+        })
     }
 }
 
@@ -505,15 +537,14 @@ impl<A: Send + 'static, B: Send + 'static> PullOperator<(A, B)> for PullZip<A, B
 pub(crate) async fn collect_all<B: Send + 'static>(
     op: &mut dyn PullOperator<B>,
 ) -> Result<Vec<B>, PipeError> {
-    let first = match op.next_chunk().await? {
-        Some(chunk) => chunk,
-        None => return Ok(Vec::new()),
-    };
-    // Use first chunk size as capacity hint (assumes roughly uniform chunks).
-    let mut all = Vec::with_capacity(first.len() * 4);
-    all.extend(first);
+    let mut all = Vec::new();
     while let Some(chunk) = op.next_chunk().await? {
-        all.extend(chunk);
+        if all.is_empty() {
+            all = chunk;
+        } else {
+            all.reserve(chunk.len());
+            all.extend(chunk);
+        }
     }
     Ok(all)
 }

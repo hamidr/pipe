@@ -31,22 +31,29 @@ const DEFAULT_BUF_SIZE: usize = 8192;
 
 pub(crate) struct PullReader<R> {
     reader: R,
-    buf_size: usize,
+    buf: Vec<u8>,
+}
+
+impl<R> PullReader<R> {
+    pub(crate) fn new(reader: R, buf_size: usize) -> Self {
+        Self {
+            reader,
+            buf: vec![0u8; buf_size],
+        }
+    }
 }
 
 impl<R: AsyncRead + Unpin + Send + 'static> PullOperator<Vec<u8>> for PullReader<R> {
     fn next_chunk(&mut self) -> ChunkFut<'_, Vec<u8>> {
         Box::pin(async move {
-            let mut buf = vec![0u8; self.buf_size];
-            let n = self.reader.read(&mut buf).await.map_err(|e| -> PipeError {
+            let n = self.reader.read(&mut self.buf).await.map_err(|e| -> PipeError {
                 Box::new(e)
             })?;
             if n == 0 {
                 Ok(None)
             } else {
-                buf.truncate(n);
-                // Each read produces one element (one byte buffer)
-                Ok(Some(vec![buf]))
+                // Copy only the bytes read into a new owned buffer
+                Ok(Some(vec![self.buf[..n].to_vec()]))
             }
         })
     }
@@ -123,25 +130,23 @@ impl PullOperator<String> for PullLines {
                         }
 
                         let mut lines = Vec::new();
-                        loop {
-                            match self.remainder.iter().position(|&b| b == b'\n') {
-                                Some(pos) => {
-                                    let line_bytes: Vec<u8> =
-                                        self.remainder.drain(..=pos).collect();
-                                    // Strip \n and optional \r
-                                    let end = if line_bytes.len() >= 2
-                                        && line_bytes[line_bytes.len() - 2] == b'\r'
-                                    {
-                                        line_bytes.len() - 2
-                                    } else {
-                                        line_bytes.len() - 1
-                                    };
-                                    lines.push(
-                                        String::from_utf8_lossy(&line_bytes[..end]).into_owned(),
-                                    );
-                                }
-                                None => break,
-                            }
+                        let mut start = 0;
+                        while let Some(rel_pos) = self.remainder[start..].iter().position(|&b| b == b'\n') {
+                            let newline = start + rel_pos;
+                            // Strip \r\n or \n
+                            let end = if newline > start && self.remainder[newline - 1] == b'\r' {
+                                newline - 1
+                            } else {
+                                newline
+                            };
+                            lines.push(
+                                String::from_utf8_lossy(&self.remainder[start..end]).into_owned(),
+                            );
+                            start = newline + 1;
+                        }
+                        // Remove consumed bytes in one operation
+                        if start > 0 {
+                            self.remainder.drain(..start);
                         }
 
                         if !lines.is_empty() {
@@ -183,7 +188,7 @@ impl Pipe<Vec<u8>> {
         reader: impl AsyncRead + Unpin + Send + 'static,
         buf_size: usize,
     ) -> Self {
-        Pipe::from_pull_once(PullReader { reader, buf_size })
+        Pipe::from_pull_once(PullReader::new(reader, buf_size))
     }
 
     /// Split byte buffers into lines (`\n` or `\r\n` delimited).
