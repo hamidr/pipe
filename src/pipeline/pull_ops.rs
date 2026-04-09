@@ -1,0 +1,862 @@
+//! Internal pull operator structs used by pipeline operators.
+
+use std::collections::VecDeque;
+use std::future::Future;
+use std::sync::Arc;
+
+use crate::pull::{ChunkFut, PipeError, PullOperator, YIELD_AFTER_EMPTY};
+
+use super::Pipe;
+
+// ── Bracket (resource safety) ───────────────────────
+
+pub(super) enum BracketState<B: Send + 'static, R: Send + 'static> {
+    Pending {
+        acquire: Arc<
+            dyn Fn() -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<R, PipeError>> + Send>,
+                > + Send
+                + Sync,
+        >,
+        use_resource: Arc<dyn Fn(R) -> Pipe<B> + Send + Sync>,
+        release: Arc<dyn Fn() + Send + Sync>,
+    },
+    Active {
+        inner: Box<dyn PullOperator<B>>,
+        release: Arc<dyn Fn() + Send + Sync>,
+    },
+    Done,
+}
+
+pub(super) struct PullBracket<B: Send + 'static, R: Send + 'static> {
+    pub(super) state: BracketState<B, R>,
+}
+
+impl<B: Send + 'static, R: Send + 'static> Drop for PullBracket<B, R> {
+    fn drop(&mut self) {
+        let old = std::mem::replace(&mut self.state, BracketState::Done);
+        if let BracketState::Active { release, .. } = old {
+            release();
+        } else if let BracketState::Pending { release, .. } = old {
+            let _ = release;
+        }
+    }
+}
+
+impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracket<B, R> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            // Lazy acquisition: acquire on first pull
+            if let BracketState::Pending { .. } = &self.state {
+                let old = std::mem::replace(&mut self.state, BracketState::Done);
+                if let BracketState::Pending {
+                    acquire,
+                    use_resource,
+                    release,
+                } = old
+                {
+                    let resource = acquire().await?;
+                    let pipe = use_resource(resource);
+                    let inner = pipe.into_pull();
+                    self.state = BracketState::Active { inner, release };
+                }
+            }
+
+            match &mut self.state {
+                BracketState::Active { inner, release } => match inner.next_chunk().await {
+                    Ok(Some(chunk)) => Ok(Some(chunk)),
+                    Ok(None) => {
+                        let release = Arc::clone(release);
+                        self.state = BracketState::Done;
+                        release();
+                        Ok(None)
+                    }
+                    Err(e) => {
+                        let release = Arc::clone(release);
+                        self.state = BracketState::Done;
+                        release();
+                        Err(e)
+                    }
+                },
+                _ => Ok(None),
+            }
+        })
+    }
+}
+
+// ── Interleave (round-robin) ────────────────────────
+
+pub(super) struct PullInterleave<B: Send + 'static> {
+    pub(super) left: Box<dyn PullOperator<B>>,
+    pub(super) right: Box<dyn PullOperator<B>>,
+    pub(super) left_turn: bool,
+    pub(super) left_buf: VecDeque<B>,
+    pub(super) right_buf: VecDeque<B>,
+    pub(super) left_done: bool,
+    pub(super) right_done: bool,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullInterleave<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            let mut result = Vec::new();
+
+            loop {
+                // Refill buffers as needed
+                if self.left_buf.is_empty() && !self.left_done {
+                    match self.left.next_chunk().await? {
+                        Some(chunk) => self.left_buf.extend(chunk),
+                        None => self.left_done = true,
+                    }
+                }
+                if self.right_buf.is_empty() && !self.right_done {
+                    match self.right.next_chunk().await? {
+                        Some(chunk) => self.right_buf.extend(chunk),
+                        None => self.right_done = true,
+                    }
+                }
+
+                if self.left_buf.is_empty() && self.right_buf.is_empty() {
+                    break;
+                }
+
+                // Interleave one element at a time
+                let limit = self.left_buf.len().max(self.right_buf.len()) * 2;
+                for _ in 0..limit {
+                    if self.left_turn {
+                        if let Some(item) = self.left_buf.pop_front() {
+                            result.push(item);
+                        }
+                    } else if let Some(item) = self.right_buf.pop_front() {
+                        result.push(item);
+                    }
+                    self.left_turn = !self.left_turn;
+
+                    if self.left_buf.is_empty() && self.right_buf.is_empty() {
+                        break;
+                    }
+                }
+
+                if !result.is_empty() {
+                    return Ok(Some(result));
+                }
+            }
+
+            if result.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(result))
+            }
+        })
+    }
+}
+
+// ── Intersperse (separator between elements) ────────
+
+pub(super) struct PullIntersperse<B: Send + 'static> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) separator: Arc<B>,
+    pub(super) buffer: Vec<B>,
+    pub(super) first: bool,
+    pub(super) done: bool,
+}
+
+impl<B: Clone + Send + Sync + 'static> PullOperator<B> for PullIntersperse<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            if self.done {
+                return Ok(None);
+            }
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    self.buffer.clear();
+                    for item in chunk {
+                        if !self.first {
+                            self.buffer.push((*self.separator).clone());
+                        }
+                        self.buffer.push(item);
+                        self.first = false;
+                    }
+                    Ok(Some(std::mem::take(&mut self.buffer)))
+                }
+                None => {
+                    self.done = true;
+                    Ok(None)
+                }
+            }
+        })
+    }
+}
+
+// ── Throttle (rate limiting) ────────────────────────
+
+pub(super) struct PullThrottle<B: Send + 'static> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) duration: std::time::Duration,
+    pub(super) last: Option<tokio::time::Instant>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullThrottle<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    let mut result = Vec::with_capacity(chunk.len());
+                    for item in chunk {
+                        if let Some(last) = self.last {
+                            let elapsed = tokio::time::Instant::now() - last;
+                            if elapsed < self.duration {
+                                tokio::time::sleep(self.duration - elapsed).await;
+                            }
+                        }
+                        self.last = Some(tokio::time::Instant::now());
+                        result.push(item);
+                    }
+                    Ok(Some(result))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── Flatten (Pipe<Pipe<B>> → Pipe<B>) ──────────────
+
+pub(super) struct PullFlatten<B: Send + 'static> {
+    pub(super) outer: Box<dyn PullOperator<Pipe<B>>>,
+    pub(super) inner: Option<Box<dyn PullOperator<B>>>,
+    pub(super) pending: VecDeque<Pipe<B>>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullFlatten<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            loop {
+                // Drain current inner pipe
+                if let Some(ref mut inner) = self.inner {
+                    match inner.next_chunk().await? {
+                        Some(chunk) => return Ok(Some(chunk)),
+                        None => {
+                            self.inner = None;
+                        }
+                    }
+                }
+                // Try next pending pipe
+                if let Some(pipe) = self.pending.pop_front() {
+                    self.inner = Some(pipe.into_pull());
+                    continue;
+                }
+                // Get next batch of pipes from outer
+                match self.outer.next_chunk().await? {
+                    Some(pipes) => {
+                        self.pending.extend(pipes);
+                    }
+                    None => return Ok(None),
+                }
+            }
+        })
+    }
+}
+
+// ── SlidingWindow ───────────────────────────────────
+
+pub(super) struct PullSlidingWindow<B: Send + 'static> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) size: usize,
+    pub(super) buffer: VecDeque<B>,
+    pub(super) done: bool,
+}
+
+impl<B: Clone + Send + 'static> PullOperator<Vec<B>> for PullSlidingWindow<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, Vec<B>> {
+        Box::pin(async move {
+            let mut windows = Vec::new();
+
+            loop {
+                // Try to emit windows from current buffer
+                while self.buffer.len() >= self.size {
+                    let window: Vec<B> = self.buffer.iter().take(self.size).cloned().collect();
+                    windows.push(window);
+                    self.buffer.pop_front();
+                }
+
+                if !windows.is_empty() {
+                    return Ok(Some(windows));
+                }
+
+                if self.done {
+                    return Ok(None);
+                }
+
+                // Pull more data
+                match self.child.next_chunk().await? {
+                    Some(chunk) => {
+                        self.buffer.extend(chunk);
+                    }
+                    None => {
+                        self.done = true;
+                    }
+                }
+            }
+        })
+    }
+}
+
+// ── RepeatWith (infinite from factory) ──────────────
+
+pub(super) struct PullRepeatWith<B> {
+    pub(super) f: Box<dyn Fn() -> B + Send>,
+    pub(super) chunk_size: usize,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullRepeatWith<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            let chunk: Vec<B> = (0..self.chunk_size).map(|_| (self.f)()).collect();
+            Ok(Some(chunk))
+        })
+    }
+}
+
+// ── Interval (time-based ticks) ─────────────────────
+
+pub(super) struct PullInterval {
+    pub(super) interval: tokio::time::Interval,
+    pub(super) chunk_size: usize,
+}
+
+impl PullOperator<tokio::time::Instant> for PullInterval {
+    fn next_chunk(&mut self) -> ChunkFut<'_, tokio::time::Instant> {
+        Box::pin(async move {
+            let mut chunk = Vec::with_capacity(self.chunk_size);
+            for _ in 0..self.chunk_size {
+                chunk.push(self.interval.tick().await);
+            }
+            Ok(Some(chunk))
+        })
+    }
+}
+
+// ── Timeout ─────────────────────────────────────────
+
+pub(super) struct PullTimeout<B: Send + 'static> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) duration: std::time::Duration,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullTimeout<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match tokio::time::timeout(self.duration, self.child.next_chunk()).await {
+                Ok(result) => result,
+                Err(_) => Err(PipeError::Custom("timeout".into())),
+            }
+        })
+    }
+}
+
+// ── Chain (sequential composition) ──────────────────
+
+pub(super) struct PullChain<B: Send + 'static> {
+    pub(super) first: Option<Box<dyn PullOperator<B>>>,
+    pub(super) second: Option<Box<dyn PullOperator<B>>>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullChain<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            if let Some(ref mut first) = self.first {
+                match first.next_chunk().await? {
+                    Some(chunk) => return Ok(Some(chunk)),
+                    None => {
+                        self.first = None;
+                    }
+                }
+            }
+            if let Some(ref mut second) = self.second {
+                match second.next_chunk().await? {
+                    Some(chunk) => return Ok(Some(chunk)),
+                    None => {
+                        self.second = None;
+                    }
+                }
+            }
+            Ok(None)
+        })
+    }
+}
+
+// ── LazyFanOut (deferred broadcast setup) ───────────
+
+/// Shared state for lazy broadcast. Initialized on first branch access.
+pub(super) struct LazyFanOut<B: Send + 'static> {
+    n: usize,
+    buffer_size: usize,
+    source_factory: Arc<dyn Fn() -> Box<dyn PullOperator<B>> + Send + Sync>,
+    state: std::sync::OnceLock<LazyFanOutState<B>>,
+}
+
+struct LazyFanOutState<B> {
+    receivers: std::sync::Mutex<Vec<Option<tokio::sync::mpsc::Receiver<Arc<Vec<B>>>>>>,
+    abort: tokio::task::AbortHandle,
+}
+
+impl<B: Clone + Send + Sync + 'static> LazyFanOut<B> {
+    pub(super) fn new(
+        n: usize,
+        buffer_size: usize,
+        source_factory: Arc<dyn Fn() -> Box<dyn PullOperator<B>> + Send + Sync>,
+    ) -> Self {
+        Self {
+            n,
+            buffer_size,
+            source_factory,
+            state: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn ensure_init(&self) -> &LazyFanOutState<B> {
+        self.state.get_or_init(|| {
+            let mut senders = Vec::with_capacity(self.n);
+            let mut receivers = Vec::with_capacity(self.n);
+            for _ in 0..self.n {
+                let (tx, rx) =
+                    tokio::sync::mpsc::channel::<Arc<Vec<B>>>(self.buffer_size.max(1));
+                senders.push(tx);
+                receivers.push(Some(rx));
+            }
+
+            let mut root = (self.source_factory)();
+            let handle = tokio::spawn(async move {
+                while let Ok(Some(chunk)) = root.next_chunk().await {
+                    let shared: Arc<Vec<B>> = Arc::new(chunk);
+                    for tx in &senders {
+                        if tx.send(Arc::clone(&shared)).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+
+            LazyFanOutState {
+                receivers: std::sync::Mutex::new(receivers),
+                abort: handle.abort_handle(),
+            }
+        })
+    }
+
+    pub(super) fn take_broadcast_receiver(
+        &self,
+        idx: usize,
+    ) -> tokio::sync::mpsc::Receiver<Arc<Vec<B>>> {
+        let state = self.ensure_init();
+        state.receivers.lock().unwrap()[idx]
+            .take()
+            .expect("broadcast branch already consumed")
+    }
+
+    pub(super) fn abort_handle(&self) -> tokio::task::AbortHandle {
+        self.ensure_init().abort.clone()
+    }
+}
+
+// ── LazyPartition (deferred partition setup) ────────
+
+/// Shared state for lazy partition. Initialized on first branch access.
+pub(super) struct LazyPartition<B: Send + 'static> {
+    n: usize,
+    buffer_size: usize,
+    source_factory: Arc<dyn Fn() -> Box<dyn PullOperator<B>> + Send + Sync>,
+    key: Arc<dyn Fn(&B) -> u64 + Send + Sync>,
+    state: std::sync::OnceLock<LazyPartitionState<B>>,
+}
+
+struct LazyPartitionState<B> {
+    receivers: std::sync::Mutex<Vec<Option<crate::channel::Receiver<B>>>>,
+}
+
+impl<B: Send + 'static> LazyPartition<B> {
+    pub(super) fn new(
+        n: usize,
+        buffer_size: usize,
+        source_factory: Arc<dyn Fn() -> Box<dyn PullOperator<B>> + Send + Sync>,
+        key: impl Fn(&B) -> u64 + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            n,
+            buffer_size,
+            source_factory,
+            key: Arc::new(key),
+            state: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn ensure_init(&self) -> &LazyPartitionState<B> {
+        self.state.get_or_init(|| {
+            let n = self.n;
+            let mut senders = Vec::with_capacity(n);
+            let mut receivers = Vec::with_capacity(n);
+            for _ in 0..n {
+                let (tx, rx) = crate::channel::bounded::<B>(self.buffer_size);
+                senders.push(tx);
+                receivers.push(rx);
+            }
+
+            let mut root = (self.source_factory)();
+            let key = Arc::clone(&self.key);
+            let handle = tokio::spawn(async move {
+                let mut buckets: Vec<Vec<B>> = (0..n).map(|_| Vec::new()).collect();
+                while let Ok(Some(chunk)) = root.next_chunk().await {
+                    for item in chunk {
+                        let idx = key(&item) as usize % n;
+                        buckets[idx].push(item);
+                    }
+                    for (i, bucket) in buckets.iter_mut().enumerate() {
+                        if !bucket.is_empty() {
+                            let batch = std::mem::take(bucket);
+                            if senders[i].send(batch).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+
+            let abort = handle.abort_handle();
+            let receivers: Vec<_> = receivers
+                .into_iter()
+                .map(|rx| Some(rx.with_abort(abort.clone())))
+                .collect();
+
+            LazyPartitionState {
+                receivers: std::sync::Mutex::new(receivers),
+            }
+        })
+    }
+
+    pub(super) fn take_receiver(&self, idx: usize) -> crate::channel::Receiver<B> {
+        let state = self.ensure_init();
+        state.receivers.lock().unwrap()[idx]
+            .take()
+            .expect("partition branch already consumed")
+    }
+}
+
+// ── GuardedPull (cancellation on drop) ───────────────
+
+/// Wraps a PullOperator with abort handles that cancel background tasks on drop.
+pub(super) struct GuardedPull<B: Send + 'static> {
+    pub(super) inner: Box<dyn PullOperator<B>>,
+    pub(super) _guards: Vec<tokio::task::AbortHandle>,
+}
+
+impl<B: Send + 'static> Drop for GuardedPull<B> {
+    fn drop(&mut self) {
+        for handle in &self._guards {
+            handle.abort();
+        }
+    }
+}
+
+impl<B: Send + 'static> PullOperator<B> for GuardedPull<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        self.inner.next_chunk()
+    }
+}
+
+// ── BroadcastReceiver (Arc-based fan-out consumer) ──
+
+/// Receives `Arc<Vec<B>>` chunks from broadcast and clones elements on pull.
+pub(super) struct BroadcastReceiver<B> {
+    pub(super) rx: tokio::sync::mpsc::Receiver<std::sync::Arc<Vec<B>>>,
+    pub(super) abort: Option<tokio::task::AbortHandle>,
+}
+
+impl<B> Drop for BroadcastReceiver<B> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.abort.take() {
+            handle.abort();
+        }
+    }
+}
+
+impl<B: Clone + Send + Sync + 'static> PullOperator<B> for BroadcastReceiver<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.rx.recv().await {
+                Some(arc) => Ok(Some(arc.iter().cloned().collect())),
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── TakeWhile ────────────────────────────────────────
+
+pub(super) struct PullTakeWhile<B, F> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) f: F,
+    pub(super) done: bool,
+}
+
+impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B>
+    for PullTakeWhile<B, F>
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            if self.done {
+                return Ok(None);
+            }
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    let mut taken = Vec::new();
+                    for item in chunk {
+                        if (self.f)(&item) {
+                            taken.push(item);
+                        } else {
+                            self.done = true;
+                            break;
+                        }
+                    }
+                    if taken.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(taken))
+                    }
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── SkipWhile ────────────────────────────────────────
+
+pub(super) struct PullSkipWhile<B, F> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) f: F,
+    pub(super) skipping: bool,
+}
+
+impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B>
+    for PullSkipWhile<B, F>
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            loop {
+                match self.child.next_chunk().await? {
+                    Some(chunk) => {
+                        if !self.skipping {
+                            return Ok(Some(chunk));
+                        }
+                        let mut rest = Vec::new();
+                        for item in chunk {
+                            if self.skipping {
+                                if !(self.f)(&item) {
+                                    self.skipping = false;
+                                    rest.push(item);
+                                }
+                            } else {
+                                rest.push(item);
+                            }
+                        }
+                        if !rest.is_empty() {
+                            return Ok(Some(rest));
+                        }
+                    }
+                    None => return Ok(None),
+                }
+            }
+        })
+    }
+}
+
+// ── Chunks ───────────────────────────────────────────
+
+pub(super) struct PullChunks<B> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) size: usize,
+}
+
+impl<B: Send + 'static> PullOperator<Vec<B>> for PullChunks<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, Vec<B>> {
+        Box::pin(async move {
+            let mut buffer = Vec::with_capacity(self.size);
+            while buffer.len() < self.size {
+                match self.child.next_chunk().await? {
+                    Some(chunk) => buffer.extend(chunk),
+                    None => break,
+                }
+            }
+            if buffer.is_empty() {
+                return Ok(None);
+            }
+            // Split buffer into sized groups using drain to avoid re-iteration
+            let num_groups = (buffer.len() + self.size - 1) / self.size;
+            let mut groups = Vec::with_capacity(num_groups);
+            while buffer.len() > self.size {
+                let rest = buffer.split_off(self.size);
+                groups.push(std::mem::replace(&mut buffer, rest));
+            }
+            if !buffer.is_empty() {
+                groups.push(buffer);
+            }
+            Ok(Some(groups))
+        })
+    }
+}
+
+// ── EvalMap (async per-element transform) ────────────
+
+pub(super) struct PullEvalMap<B, F> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) f: F,
+}
+
+impl<A: Send + 'static, B: Send + 'static, Fut, F> PullOperator<B> for PullEvalMap<A, F>
+where
+    Fut: Future<Output = Result<B, PipeError>> + Send,
+    F: Fn(A) -> Fut + Send + 'static,
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    let mut result = Vec::with_capacity(chunk.len());
+                    for item in chunk {
+                        result.push((self.f)(item).await?);
+                    }
+                    Ok(Some(result))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── EvalFilter (async predicate) ─────────────────────
+
+pub(super) struct PullEvalFilter<B, F> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) f: F,
+}
+
+impl<B: Send + 'static, Fut, F> PullOperator<B> for PullEvalFilter<B, F>
+where
+    Fut: Future<Output = Result<bool, PipeError>> + Send,
+    F: Fn(&B) -> Fut + Send + 'static,
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            let mut empty_runs = 0usize;
+            loop {
+                match self.child.next_chunk().await? {
+                    Some(chunk) => {
+                        let mut filtered = Vec::new();
+                        for item in chunk {
+                            if (self.f)(&item).await? {
+                                filtered.push(item);
+                            }
+                        }
+                        if !filtered.is_empty() {
+                            return Ok(Some(filtered));
+                        }
+                        empty_runs += 1;
+                        if empty_runs >= YIELD_AFTER_EMPTY {
+                            empty_runs = 0;
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                    None => return Ok(None),
+                }
+            }
+        })
+    }
+}
+
+// ── EvalTap (async side-effect) ──────────────────────
+
+pub(super) struct PullEvalTap<B, F> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) f: F,
+}
+
+impl<B: Send + Sync + 'static, Fut, F> PullOperator<B> for PullEvalTap<B, F>
+where
+    Fut: Future<Output = Result<(), PipeError>> + Send,
+    F: Fn(&B) -> Fut + Send + 'static,
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    for item in &chunk {
+                        (self.f)(item).await?;
+                    }
+                    Ok(Some(chunk))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── HandleError ──────────────────────────────────────
+
+pub(super) struct PullHandleError<B: Send + 'static> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) handler: Box<dyn Fn(PipeError) -> Pipe<B> + Send>,
+    pub(super) fallback: Option<Box<dyn PullOperator<B>>>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullHandleError<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            // If we're in fallback mode, drain the fallback pipe
+            if let Some(ref mut fb) = self.fallback {
+                return fb.next_chunk().await;
+            }
+            match self.child.next_chunk().await {
+                Ok(chunk) => Ok(chunk),
+                Err(e) => {
+                    // Switch to fallback stream
+                    let pipe = (self.handler)(e);
+                    self.fallback = Some(pipe.into_pull());
+                    // Pull first chunk from fallback
+                    self.fallback.as_mut().unwrap().next_chunk().await
+                }
+            }
+        })
+    }
+}
+
+// ── Retry ────────────────────────────────────────────
+
+pub(super) struct PullRetry<B: Send + 'static> {
+    pub(super) factory: Box<dyn Fn() -> Pipe<B> + Send>,
+    pub(super) current: Option<Box<dyn PullOperator<B>>>,
+    pub(super) remaining: usize,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullRetry<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            loop {
+                if self.current.is_none() {
+                    if self.remaining == 0 {
+                        return Err(PipeError::RetryExhausted);
+                    }
+                    self.remaining -= 1;
+                    self.current = Some((self.factory)().into_pull());
+                }
+                match self.current.as_mut().unwrap().next_chunk().await {
+                    Ok(chunk) => return Ok(chunk),
+                    Err(_e) if self.remaining > 0 => {
+                        self.current = None; // retry
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        })
+    }
+}
