@@ -59,6 +59,11 @@ impl<B> Drop for Receiver<B> {
 }
 
 impl<B> Receiver<B> {
+    /// Create a receiver from a raw tokio mpsc receiver.
+    pub fn from_mpsc(rx: tokio::sync::mpsc::Receiver<Vec<B>>) -> Self {
+        Self { rx, abort: None }
+    }
+
     /// Attach an abort handle for automatic cancellation on drop.
     pub fn with_abort(mut self, handle: tokio::task::AbortHandle) -> Self {
         self.abort = Some(handle);

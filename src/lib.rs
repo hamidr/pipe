@@ -49,7 +49,7 @@ pub mod prelude {
     //! Re-exports for convenience.
     pub use crate::channel::{bounded, Receiver, Sender};
     pub use crate::operator::{Operator, PinFut};
-    pub use crate::pipeline::Pipe;
+    pub use crate::pipeline::{Emitter, Pipe};
     pub use crate::pull::{ChunkFut, PipeError, PullOperator};
     pub use crate::sink::Sink;
     pub use crate::transform::Transform;

@@ -9,6 +9,32 @@ use std::future::Future;
 use std::sync::Arc;
 
 use crate::operator::Operator;
+
+/// Handle for emitting elements from [`Pipe::generate`].
+pub struct Emitter<B> {
+    tx: tokio::sync::mpsc::Sender<Vec<B>>,
+}
+
+impl<B: Send + 'static> Emitter<B> {
+    /// Emit a single element. Backpressure: awaits if the buffer is full.
+    pub async fn emit(&self, item: B) -> Result<(), PipeError> {
+        self.tx
+            .send(vec![item])
+            .await
+            .map_err(|_| PipeError::Closed)
+    }
+
+    /// Emit a batch of elements.
+    pub async fn emit_all(&self, items: Vec<B>) -> Result<(), PipeError> {
+        if !items.is_empty() {
+            self.tx
+                .send(items)
+                .await
+                .map_err(|_| PipeError::Closed)?;
+        }
+        Ok(())
+    }
+}
 use crate::pull::{
     collect_all, fold_all, ArcSource, PipeError, PullAndThen, PullDrop, PullFilter, PullFlatMap,
     PullIterate, PullMap, PullOperator, PullPipe, PullScan, PullSource, PullTake, PullTap,
@@ -128,6 +154,39 @@ impl<B: Send + 'static> Pipe<B> {
                 .unwrap()
                 .take()
                 .expect("from_pull_once: operator already consumed (Pipe was cloned and both materialized)")
+        })
+    }
+
+    /// Create a pipe from an async generator function.
+    ///
+    /// The function receives a [`Emitter`] and yields elements by
+    /// calling `emitter.emit(item)`. This avoids implementing
+    /// [`PullOperator`] manually.
+    ///
+    /// ```ignore
+    /// let pipe = Pipe::generate(|mut tx| async move {
+    ///     tx.emit(1).await;
+    ///     tx.emit(2).await;
+    ///     tx.emit(3).await;
+    ///     Ok(())
+    /// });
+    /// ```
+    pub fn generate<Fut>(
+        f: impl Fn(Emitter<B>) -> Fut + Send + Sync + 'static,
+    ) -> Self
+    where
+        Fut: Future<Output = Result<(), PipeError>> + Send + 'static,
+    {
+        let f = Arc::new(f);
+        Self::from_factory(move || {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<B>>(2);
+            let f = Arc::clone(&f);
+            let handle = tokio::spawn(async move {
+                let emitter = Emitter { tx };
+                let _ = f(emitter).await;
+            });
+            let receiver = crate::channel::Receiver::from_mpsc(rx);
+            Box::new(receiver.with_abort(handle.abort_handle()))
         })
     }
 
@@ -2543,5 +2602,64 @@ mod tests {
             .collect()
             .await;
         assert!(result.is_err());
+    }
+
+    // ── generate ──────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generate_basic() {
+        let result = Pipe::generate(|tx| async move {
+            tx.emit(1).await?;
+            tx.emit(2).await?;
+            tx.emit(3).await?;
+            Ok(())
+        })
+        .collect()
+        .await
+        .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generate_emit_all() {
+        let result = Pipe::generate(|tx| async move {
+            tx.emit_all(vec![1, 2, 3]).await?;
+            tx.emit_all(vec![4, 5]).await?;
+            Ok(())
+        })
+        .collect()
+        .await
+        .unwrap();
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generate_with_pipeline() {
+        let result = Pipe::generate(|tx| async move {
+            for i in 1..=10 {
+                tx.emit(i).await?;
+            }
+            Ok(())
+        })
+        .filter(|x| x % 2 == 0)
+        .map(|x| x * 10)
+        .collect()
+        .await
+        .unwrap();
+        assert_eq!(result, vec![20, 40, 60, 80, 100]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generate_cloneable() {
+        let pipe = Pipe::generate(|tx| async move {
+            tx.emit(1).await?;
+            tx.emit(2).await?;
+            Ok(())
+        });
+        let clone = pipe.clone();
+        let a = pipe.collect().await.unwrap();
+        let b = clone.collect().await.unwrap();
+        assert_eq!(a, vec![1, 2]);
+        assert_eq!(b, vec![1, 2]);
     }
 }
