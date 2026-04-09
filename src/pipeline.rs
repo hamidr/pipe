@@ -433,31 +433,7 @@ impl<B: Send + 'static> Pipe<B> {
                 }
             });
 
-            struct ParEvalMapReceiver<C> {
-                rx: tokio::sync::mpsc::Receiver<Result<C, PipeError>>,
-                _abort: tokio::task::AbortHandle,
-            }
-            impl<C> Drop for ParEvalMapReceiver<C> {
-                fn drop(&mut self) {
-                    self._abort.abort();
-                }
-            }
-            impl<C: Send + 'static> PullOperator<C> for ParEvalMapReceiver<C> {
-                fn next_chunk(&mut self) -> ChunkFut<'_, C> {
-                    Box::pin(async move {
-                        match self.rx.recv().await {
-                            Some(Ok(item)) => Ok(Some(vec![item])),
-                            Some(Err(e)) => Err(e),
-                            None => Ok(None),
-                        }
-                    })
-                }
-            }
-
-            Box::new(ParEvalMapReceiver {
-                rx: out_rx,
-                _abort: handle.abort_handle(),
-            })
+            Box::new(crate::channel::TaskResultReceiver::new(out_rx, handle.abort_handle()))
         })
     }
 
@@ -513,31 +489,7 @@ impl<B: Send + 'static> Pipe<B> {
                 }
             });
 
-            struct ParUnorderedReceiver<C> {
-                rx: tokio::sync::mpsc::Receiver<Result<C, PipeError>>,
-                _abort: tokio::task::AbortHandle,
-            }
-            impl<C> Drop for ParUnorderedReceiver<C> {
-                fn drop(&mut self) {
-                    self._abort.abort();
-                }
-            }
-            impl<C: Send + 'static> PullOperator<C> for ParUnorderedReceiver<C> {
-                fn next_chunk(&mut self) -> ChunkFut<'_, C> {
-                    Box::pin(async move {
-                        match self.rx.recv().await {
-                            Some(Ok(item)) => Ok(Some(vec![item])),
-                            Some(Err(e)) => Err(e),
-                            None => Ok(None),
-                        }
-                    })
-                }
-            }
-
-            Box::new(ParUnorderedReceiver {
-                rx: out_rx,
-                _abort: handle.abort_handle(),
-            })
+            Box::new(crate::channel::TaskResultReceiver::new(out_rx, handle.abort_handle()))
         })
     }
 
@@ -700,29 +652,7 @@ impl<B: Send + 'static> Pipe<B> {
                 }
             });
 
-            // Wrap receiver as a PullOperator<Vec<B>>
-            struct ChunksTimeoutReceiver<B> {
-                rx: tokio::sync::mpsc::Receiver<Vec<B>>,
-                _abort: tokio::task::AbortHandle,
-            }
-            impl<B> Drop for ChunksTimeoutReceiver<B> {
-                fn drop(&mut self) { self._abort.abort(); }
-            }
-            impl<B: Send + 'static> PullOperator<Vec<B>> for ChunksTimeoutReceiver<B> {
-                fn next_chunk(&mut self) -> ChunkFut<'_, Vec<B>> {
-                    Box::pin(async move {
-                        match self.rx.recv().await {
-                            Some(batch) => Ok(Some(vec![batch])),
-                            None => Ok(None),
-                        }
-                    })
-                }
-            }
-
-            Box::new(ChunksTimeoutReceiver {
-                rx,
-                _abort: handle.abort_handle(),
-            })
+            Box::new(crate::channel::TaskReceiver::new(rx, handle.abort_handle()))
         })
     }
 
@@ -900,28 +830,7 @@ impl<B: Send + 'static> Pipe<B> {
                 }
             });
 
-            struct DebounceReceiver<B> {
-                rx: tokio::sync::mpsc::Receiver<B>,
-                _abort: tokio::task::AbortHandle,
-            }
-            impl<B> Drop for DebounceReceiver<B> {
-                fn drop(&mut self) { self._abort.abort(); }
-            }
-            impl<B: Send + 'static> PullOperator<B> for DebounceReceiver<B> {
-                fn next_chunk(&mut self) -> ChunkFut<'_, B> {
-                    Box::pin(async move {
-                        match self.rx.recv().await {
-                            Some(item) => Ok(Some(vec![item])),
-                            None => Ok(None),
-                        }
-                    })
-                }
-            }
-
-            Box::new(DebounceReceiver {
-                rx,
-                _abort: handle.abort_handle(),
-            })
+            Box::new(crate::channel::TaskReceiver::new(rx, handle.abort_handle()))
         })
     }
 

@@ -77,6 +77,74 @@ impl<B: Send + 'static> PullOperator<B> for Receiver<B> {
     }
 }
 
+// ── TaskReceiver (single items from background task) ──
+
+/// Receives individual items from a background task.
+/// Aborts the task on drop.
+pub struct TaskReceiver<B> {
+    rx: tokio::sync::mpsc::Receiver<B>,
+    abort: tokio::task::AbortHandle,
+}
+
+impl<B> TaskReceiver<B> {
+    /// Create from a raw mpsc receiver and an abort handle.
+    pub fn new(rx: tokio::sync::mpsc::Receiver<B>, abort: tokio::task::AbortHandle) -> Self {
+        Self { rx, abort }
+    }
+}
+
+impl<B> Drop for TaskReceiver<B> {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+
+impl<B: Send + 'static> PullOperator<B> for TaskReceiver<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.rx.recv().await {
+                Some(item) => Ok(Some(vec![item])),
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+/// Receives `Result<B, PipeError>` items from a background task.
+/// Aborts the task on drop. Propagates errors to the consumer.
+pub struct TaskResultReceiver<B> {
+    rx: tokio::sync::mpsc::Receiver<Result<B, PipeError>>,
+    abort: tokio::task::AbortHandle,
+}
+
+impl<B> TaskResultReceiver<B> {
+    /// Create from a raw mpsc receiver and an abort handle.
+    pub fn new(
+        rx: tokio::sync::mpsc::Receiver<Result<B, PipeError>>,
+        abort: tokio::task::AbortHandle,
+    ) -> Self {
+        Self { rx, abort }
+    }
+}
+
+impl<B> Drop for TaskResultReceiver<B> {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+
+impl<B: Send + 'static> PullOperator<B> for TaskResultReceiver<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.rx.recv().await {
+                Some(Ok(item)) => Ok(Some(vec![item])),
+                Some(Err(e)) => Err(e),
+                None => Ok(None),
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
