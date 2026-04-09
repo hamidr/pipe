@@ -141,6 +141,12 @@ let merged = Pipe::merge(vec![
 .collect()
 .await?;
 
+// merge_with — shorthand for two pipes
+let merged = Pipe::from_iter(vec![1, 3, 5])
+    .merge_with(Pipe::from_iter(vec![2, 4, 6]))
+    .collect()
+    .await?;
+
 // broadcast — fan-out to N consumers (clone each element)
 let branches = Pipe::from_iter(1..=100)
     .broadcast(3, 4);  // 3 branches, buffer 4 chunks each
@@ -223,8 +229,65 @@ impl PullOperator<Row> for SqlCursor {
     }
 }
 
-let pipe = Pipe::from_pull(Box::new(SqlCursor::new(conn, query)));
+// No Box::new needed — from_pull accepts impl PullOperator directly
+let pipe = Pipe::from_pull(SqlCursor::new(conn, query));
 let results = pipe.map(|row| row.name).collect().await?;
+```
+
+### Sequential composition, enumerate, inspect
+
+```rust
+// chain — all of A, then all of B (sequential, not concurrent)
+let result = Pipe::from_iter(vec![1, 2])
+    .chain(Pipe::from_iter(vec![3, 4, 5]))
+    .collect()
+    .await?;
+
+assert_eq!(result, vec![1, 2, 3, 4, 5]);
+
+// enumerate — pair each element with its index
+let result = Pipe::from_iter(vec!["a", "b", "c"])
+    .enumerate()
+    .collect()
+    .await?;
+
+assert_eq!(result, vec![(0, "a"), (1, "b"), (2, "c")]);
+
+// inspect — alias for tap (Rust iterator convention)
+Pipe::from_iter(1..=5)
+    .inspect(|x| println!("saw: {x}"))
+    .collect()
+    .await?;
+```
+
+### Terminals
+
+```rust
+// for_each — run a side-effect, discard values
+Pipe::from_iter(events)
+    .for_each(|e| process(e))
+    .await?;
+
+// first / last
+let head = Pipe::from_iter(1..=10).first().await?;  // Some(1)
+let tail = Pipe::from_iter(1..=10).last().await?;    // Some(10)
+```
+
+### Stream interop
+
+```rust
+use futures_core::Stream;
+
+// Any futures::Stream → Pipe
+let pipe = Pipe::from_stream(some_stream)
+    .filter(|x| x > &threshold)
+    .map(|x| x * 2);
+
+// Pipe → futures::Stream
+let stream = Pipe::from_iter(1..=100)
+    .map(|x| x * 10)
+    .into_stream();
+// stream implements Stream<Item = Result<i64, PipeError>>
 ```
 
 ## License
