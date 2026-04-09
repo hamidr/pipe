@@ -726,6 +726,28 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
+    /// Emit overlapping windows of `size` elements.
+    ///
+    /// Each window shares `size - 1` elements with the previous one:
+    /// `[1,2,3], [2,3,4], [3,4,5], ...`
+    ///
+    /// Requires `B: Clone` since elements appear in multiple windows.
+    pub fn sliding_window(self, size: usize) -> Pipe<Vec<B>>
+    where
+        B: Clone + Sync,
+    {
+        assert!(size > 0, "sliding_window size must be > 0");
+        let parent = self.factory;
+        Pipe::from_factory(move || {
+            Box::new(PullSlidingWindow {
+                child: parent(),
+                size,
+                buffer: std::collections::VecDeque::with_capacity(size),
+                done: false,
+            })
+        })
+    }
+
     /// Fail if a single pull takes longer than `duration`.
     pub fn timeout(self, duration: std::time::Duration) -> Self {
         let parent = self.factory;
@@ -1113,6 +1135,20 @@ impl<B: Clone + Send + Sync + 'static> Pipe<Vec<B>> {
     }
 }
 
+/// Split a `Pipe<(A, B)>` into two pipes via broadcast.
+///
+/// Uses `broadcast(2)` internally — the source is shared.
+/// Both pipes must be consumed; dropping one stalls the other.
+impl<A: Clone + Send + Sync + 'static, B: Clone + Send + Sync + 'static> Pipe<(A, B)> {
+    pub fn unzip(self, buffer_size: usize) -> (Pipe<A>, Pipe<B>) {
+        let branches = self.broadcast(2, buffer_size);
+        let mut iter = branches.into_iter();
+        let left = iter.next().unwrap().map(|(a, _)| a);
+        let right = iter.next().unwrap().map(|(_, b)| b);
+        (left, right)
+    }
+}
+
 // ══════════════════════════════════════════════════════
 // Internal pull operators for new features
 // ══════════════════════════════════════════════════════
@@ -1193,6 +1229,52 @@ impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracke
                     }
                 },
                 _ => Ok(None),
+            }
+        })
+    }
+}
+
+// ── SlidingWindow ───────────────────────────────────
+
+struct PullSlidingWindow<B: Send + 'static> {
+    child: Box<dyn PullOperator<B>>,
+    size: usize,
+    buffer: std::collections::VecDeque<B>,
+    done: bool,
+}
+
+impl<B: Clone + Send + 'static> PullOperator<Vec<B>> for PullSlidingWindow<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, Vec<B>> {
+        Box::pin(async move {
+            let mut windows = Vec::new();
+
+            loop {
+                // Try to emit windows from current buffer
+                while self.buffer.len() >= self.size {
+                    let window: Vec<B> = self.buffer.iter().take(self.size).cloned().collect();
+                    windows.push(window);
+                    self.buffer.pop_front();
+                }
+
+                if !windows.is_empty() {
+                    return Ok(Some(windows));
+                }
+
+                if self.done {
+                    return Ok(None);
+                }
+
+                // Pull more data
+                match self.child.next_chunk().await? {
+                    Some(chunk) => {
+                        self.buffer.extend(chunk);
+                    }
+                    None => {
+                        self.done = true;
+                        // Emit any remaining partial-fill windows
+                        // (buffer.len() < size, so no more windows)
+                    }
+                }
             }
         })
     }
@@ -2764,5 +2846,51 @@ mod tests {
         // Ticks should be monotonically increasing
         assert!(result[0] <= result[1]);
         assert!(result[1] <= result[2]);
+    }
+
+    // ── sliding_window / unzip ────────────────────────────
+
+    #[tokio::test]
+    async fn sliding_window_basic() {
+        let result = Pipe::from_iter(1..=5)
+            .sliding_window(3)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![1, 2, 3], vec![2, 3, 4], vec![3, 4, 5]]
+        );
+    }
+
+    #[tokio::test]
+    async fn sliding_window_size_1() {
+        let result = Pipe::from_iter(vec![10, 20, 30])
+            .sliding_window(1)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![vec![10], vec![20], vec![30]]);
+    }
+
+    #[tokio::test]
+    async fn sliding_window_larger_than_input() {
+        let result = Pipe::from_iter(vec![1, 2])
+            .sliding_window(5)
+            .collect()
+            .await
+            .unwrap();
+        // Not enough elements to form a window
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unzip_splits_pairs() {
+        let pairs = Pipe::from_iter(vec![(1, "a"), (2, "b"), (3, "c")]);
+        let (left, right) = pairs.unzip(2);
+        let a = left.collect().await.unwrap();
+        let b = right.collect().await.unwrap();
+        assert_eq!(a, vec![1, 2, 3]);
+        assert_eq!(b, vec!["a", "b", "c"]);
     }
 }
