@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use crate::operator::Operator;
 use crate::pull::{
-    collect_all, fold_all, PipeError, PullAndThen, PullDrop, PullFilter, PullFlatMap, PullIterate,
-    PullMap, PullOperator, PullPipe, PullScan, PullSource, PullTake, PullTap, PullUnfold, PullZip,
+    collect_all, fold_all, ArcSource, PipeError, PullAndThen, PullDrop, PullFilter, PullFlatMap,
+    PullIterate, PullMap, PullOperator, PullPipe, PullScan, PullSource, PullTake, PullTap,
+    PullUnfold, PullZip,
 };
 
 
@@ -61,7 +62,7 @@ impl<B: Send + 'static> Pipe<B> {
         B: Clone + Sync,
     {
         let data: Arc<[B]> = items.into_iter().collect::<Vec<B>>().into();
-        Self::from_factory(move || Box::new(PullSource::new(data.iter().cloned().collect())))
+        Self::from_factory(move || Box::new(ArcSource::new(Arc::clone(&data))))
     }
 
     /// Create a stream of one element.
@@ -69,8 +70,8 @@ impl<B: Send + 'static> Pipe<B> {
     where
         B: Clone + Sync,
     {
-        let item = Arc::new(item);
-        Self::from_factory(move || Box::new(PullSource::new(vec![(*item).clone()])))
+        let data: Arc<[B]> = Arc::from(vec![item]);
+        Self::from_factory(move || Box::new(ArcSource::new(Arc::clone(&data))))
     }
 
     /// Create an empty stream.
@@ -636,15 +637,18 @@ impl<B: Send + 'static> Pipe<B> {
 
         let mut root = (self.factory)();
         let handle = tokio::spawn(async move {
+            let mut buckets: Vec<Vec<B>> = (0..n).map(|_| Vec::new()).collect();
             while let Ok(Some(chunk)) = root.next_chunk().await {
-                let mut buckets: Vec<Vec<B>> = (0..n).map(|_| Vec::new()).collect();
                 for item in chunk {
                     let idx = key(&item) as usize % n;
                     buckets[idx].push(item);
                 }
-                for (i, bucket) in buckets.into_iter().enumerate() {
-                    if !bucket.is_empty() && senders[i].send(bucket).await.is_err() {
-                        return;
+                for (i, bucket) in buckets.iter_mut().enumerate() {
+                    if !bucket.is_empty() {
+                        let batch = std::mem::take(bucket);
+                        if senders[i].send(batch).await.is_err() {
+                            return;
+                        }
                     }
                 }
             }
@@ -934,18 +938,16 @@ impl<B: Send + 'static> PullOperator<Vec<B>> for PullChunks<B> {
             if buffer.is_empty() {
                 return Ok(None);
             }
-            let groups: Vec<Vec<B>> = {
-                let mut gs = Vec::new();
-                let mut iter = buffer.into_iter();
-                loop {
-                    let group: Vec<B> = iter.by_ref().take(self.size).collect();
-                    if group.is_empty() {
-                        break;
-                    }
-                    gs.push(group);
-                }
-                gs
-            };
+            // Split buffer into sized groups using drain to avoid re-iteration
+            let num_groups = (buffer.len() + self.size - 1) / self.size;
+            let mut groups = Vec::with_capacity(num_groups);
+            while buffer.len() > self.size {
+                let rest = buffer.split_off(self.size);
+                groups.push(std::mem::replace(&mut buffer, rest));
+            }
+            if !buffer.is_empty() {
+                groups.push(buffer);
+            }
             Ok(Some(groups))
         })
     }
