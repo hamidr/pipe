@@ -4,9 +4,9 @@ A lazy, effectful streaming library for Rust, inspired by [FS2](https://fs2.io/)
 
 ## Core types
 
-- **`Pipe<B>`** — lazy effectful stream. Pull-based, chunked internally, element-level API externally. No data flows until a terminal is called.
+- **`Pipe<B>`** — lazy effectful stream. Pull-based, chunked internally, element-level API externally. No data flows until a terminal is called. Implements `Clone` — each clone materializes an independent pipeline.
 
-- **`PullOperator<B>`** — public pull protocol. `next_chunk() → Option<Vec<B>>`. Implement this for custom sources. `Pipe::from_pull()` wraps any `PullOperator<B>` as a `Pipe<B>`.
+- **`PullOperator<B>`** — public pull protocol. `next_chunk() → Option<Vec<B>>`. Implement this for custom sources. `Pipe::from_pull()` accepts a factory; `Pipe::from_pull_once()` wraps a single instance.
 
 - **`Operator<A, B>`** — per-element async transform (`Send`, not `Sync`). `execute(A) → Future<B>`. Used with `Pipe::pipe()`.
 
@@ -229,9 +229,12 @@ impl PullOperator<Row> for SqlCursor {
     }
 }
 
-// No Box::new needed — from_pull accepts impl PullOperator directly
-let pipe = Pipe::from_pull(SqlCursor::new(conn, query));
+// from_pull takes a factory — the pipe is cloneable
+let pipe = Pipe::from_pull(|| Box::new(SqlCursor::new(conn, query)));
 let results = pipe.map(|row| row.name).collect().await?;
+
+// from_pull_once for single-use sources (cloning + materializing both panics)
+let pipe = Pipe::from_pull_once(SqlCursor::new(conn, query));
 ```
 
 ### Sequential composition, enumerate, inspect
@@ -271,6 +274,19 @@ Pipe::from_iter(events)
 // first / last
 let head = Pipe::from_iter(1..=10).first().await?;  // Some(1)
 let tail = Pipe::from_iter(1..=10).last().await?;    // Some(10)
+```
+
+### Clone — reuse pipeline descriptions
+
+```rust
+// Pipe is a blueprint — clone it to run independently
+let pipeline = Pipe::from_iter(1..=10)
+    .filter(|x| x % 2 == 0)
+    .map(|x| x * 10);
+
+let a = pipeline.clone().collect().await?;
+let b = pipeline.collect().await?;
+assert_eq!(a, b);  // independent runs, same result
 ```
 
 ### Stream interop
