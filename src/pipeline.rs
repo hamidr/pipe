@@ -6,6 +6,7 @@
 //! element type.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use crate::operator::Operator;
 use crate::pull::{
@@ -13,7 +14,13 @@ use crate::pull::{
     PullMap, PullOperator, PullPipe, PullScan, PullSource, PullTake, PullTap, PullUnfold, PullZip,
 };
 
+
 /// A lazy effectful list of `B` elements.
+///
+/// `Pipe` is a blueprint — it describes a pipeline of operations but
+/// does not execute until a terminal (`.collect()`, `.fold()`, etc.) is
+/// called. Because it is a description, `Pipe` implements [`Clone`]:
+/// each clone materializes an independent operator chain.
 ///
 /// ```ignore
 /// let result = Pipe::from_iter(1..=10)
@@ -24,13 +31,23 @@ use crate::pull::{
 /// assert_eq!(result, vec![12, 14, 16]);
 /// ```
 pub struct Pipe<B: Send + 'static> {
-    root: Box<dyn PullOperator<B>>,
+    pub(crate) factory: Arc<dyn Fn() -> Box<dyn PullOperator<B>> + Send + Sync>,
+}
+
+impl<B: Send + 'static> Clone for Pipe<B> {
+    fn clone(&self) -> Self {
+        Self {
+            factory: Arc::clone(&self.factory),
+        }
+    }
 }
 
 impl<B: Send + 'static> Pipe<B> {
-    /// Internal: wrap a pull operator with no background tasks.
-    fn wrap(root: Box<dyn PullOperator<B>>) -> Self {
-        Self { root }
+    /// Internal: create a pipe from a factory closure.
+    pub(crate) fn from_factory(f: impl Fn() -> Box<dyn PullOperator<B>> + Send + Sync + 'static) -> Self {
+        Self {
+            factory: Arc::new(f),
+        }
     }
 
     // ══════════════════════════════════════════════════════
@@ -39,39 +56,78 @@ impl<B: Send + 'static> Pipe<B> {
 
     /// Create a stream from an iterator of elements.
     #[allow(clippy::should_implement_trait)]
-    pub fn from_iter(items: impl IntoIterator<Item = B>) -> Self {
-        Self::wrap(Box::new(PullSource::new(items.into_iter().collect())))
+    pub fn from_iter(items: impl IntoIterator<Item = B>) -> Self
+    where
+        B: Clone + Sync,
+    {
+        let data: Arc<[B]> = items.into_iter().collect::<Vec<B>>().into();
+        Self::from_factory(move || Box::new(PullSource::new(data.iter().cloned().collect())))
     }
 
     /// Create a stream of one element.
-    pub fn once(item: B) -> Self {
-        Self::wrap(Box::new(PullSource::new(vec![item])))
+    pub fn once(item: B) -> Self
+    where
+        B: Clone + Sync,
+    {
+        let item = Arc::new(item);
+        Self::from_factory(move || Box::new(PullSource::new(vec![(*item).clone()])))
     }
 
     /// Create an empty stream.
     pub fn empty() -> Self {
-        Self::wrap(Box::new(PullSource::<B>::empty()))
+        Self::from_factory(|| Box::new(PullSource::<B>::empty()))
     }
 
     /// Lazy generation from a seed. Produces elements until `step` returns `None`.
-    pub fn unfold<S: Send + 'static>(
+    pub fn unfold<S: Clone + Send + Sync + 'static>(
         seed: S,
-        step: impl Fn(&mut S) -> Option<B> + Send + 'static,
+        step: impl Fn(&mut S) -> Option<B> + Send + Sync + 'static,
     ) -> Self {
-        Self::wrap(Box::new(PullUnfold::new(seed, step)))
+        let step: Arc<dyn Fn(&mut S) -> Option<B> + Send + Sync> = Arc::new(step);
+        Self::from_factory(move || {
+            let seed = seed.clone();
+            let step = Arc::clone(&step);
+            Box::new(PullUnfold::new(seed, move |s: &mut S| step(s)))
+        })
     }
 
     /// Infinite stream: `init, f(init), f(f(init)), ...`
-    pub fn iterate(init: B, step: impl Fn(&B) -> B + Send + 'static) -> Self
+    pub fn iterate(init: B, step: impl Fn(&B) -> B + Send + Sync + 'static) -> Self
     where
-        B: Clone,
+        B: Clone + Sync,
     {
-        Self::wrap(Box::new(PullIterate::new(init, step)))
+        let step: Arc<dyn Fn(&B) -> B + Send + Sync> = Arc::new(step);
+        Self::from_factory(move || {
+            let init = init.clone();
+            let step = Arc::clone(&step);
+            Box::new(PullIterate::new(init, move |b: &B| step(b)))
+        })
     }
 
-    /// Create a stream from a custom [`PullOperator`] implementation.
-    pub fn from_pull(op: impl PullOperator<B> + 'static) -> Self {
-        Self::wrap(Box::new(op))
+    /// Create a stream from a factory that produces a [`PullOperator`].
+    ///
+    /// The factory is called each time the pipe is materialized (i.e.,
+    /// when a terminal like `.collect()` is invoked), producing an
+    /// independent operator chain. This makes the pipe cloneable.
+    pub fn from_pull(
+        factory: impl Fn() -> Box<dyn PullOperator<B>> + Send + Sync + 'static,
+    ) -> Self {
+        Self::from_factory(factory)
+    }
+
+    /// Create a stream from a single [`PullOperator`] instance.
+    ///
+    /// The resulting pipe can be cloned, but only one clone may be
+    /// materialized (executed). Panics if a second clone is executed.
+    pub fn from_pull_once(op: impl PullOperator<B> + 'static) -> Self {
+        let slot: Arc<std::sync::Mutex<Option<Box<dyn PullOperator<B>>>>> =
+            Arc::new(std::sync::Mutex::new(Some(Box::new(op))));
+        Self::from_factory(move || {
+            slot.lock()
+                .unwrap()
+                .take()
+                .expect("from_pull_once: operator already consumed (Pipe was cloned and both materialized)")
+        })
     }
 
     // ══════════════════════════════════════════════════════
@@ -79,48 +135,81 @@ impl<B: Send + 'static> Pipe<B> {
     // ══════════════════════════════════════════════════════
 
     /// Transform each element (may change type).
-    pub fn map<C: Send + 'static>(self, f: impl Fn(B) -> C + Send + 'static) -> Pipe<C> {
-        Pipe::wrap(Box::new(PullMap {
-            child: self.root,
-            f,
-        }))
+    pub fn map<C: Send + 'static>(self, f: impl Fn(B) -> C + Send + Sync + 'static) -> Pipe<C> {
+        let parent = self.factory;
+        let f = Arc::new(f);
+        Pipe::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullMap {
+                child,
+                f: move |b| f(b),
+            })
+        })
     }
 
     /// Fused map + filter (may change type).
     pub fn and_then<C: Send + 'static>(
         self,
-        f: impl Fn(B) -> Option<C> + Send + 'static,
+        f: impl Fn(B) -> Option<C> + Send + Sync + 'static,
     ) -> Pipe<C> {
-        Pipe::wrap(Box::new(PullAndThen {
-            child: self.root,
-            f,
-        }))
+        let parent = self.factory;
+        let f = Arc::new(f);
+        Pipe::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullAndThen {
+                child,
+                f: move |b| f(b),
+            })
+        })
     }
 
     /// Each element expands into a sub-stream (may change type).
-    pub fn flat_map<C: Send + 'static>(self, f: impl Fn(B) -> Pipe<C> + Send + 'static) -> Pipe<C> {
-        Pipe::wrap(Box::new(PullFlatMap::new(self.root, f)))
+    pub fn flat_map<C: Send + 'static>(
+        self,
+        f: impl Fn(B) -> Pipe<C> + Send + Sync + 'static,
+    ) -> Pipe<C> {
+        let parent = self.factory;
+        let f = Arc::new(f);
+        Pipe::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullFlatMap::new(child, move |b| f(b)))
+        })
     }
 
     /// Stateful per-element transform (may change type).
-    pub fn scan<C: Send + 'static, S: Send + 'static>(
+    pub fn scan<C: Send + 'static, S: Clone + Send + Sync + 'static>(
         self,
         init: S,
-        f: impl Fn(&mut S, B) -> C + Send + 'static,
+        f: impl Fn(&mut S, B) -> C + Send + Sync + 'static,
     ) -> Pipe<C> {
-        Pipe::wrap(Box::new(PullScan {
-            child: self.root,
-            state: init,
-            f,
-        }))
+        let parent = self.factory;
+        let f: Arc<dyn Fn(&mut S, B) -> C + Send + Sync> = Arc::new(f);
+        Pipe::from_factory(move || {
+            let child = parent();
+            let state = init.clone();
+            let f = Arc::clone(&f);
+            Box::new(PullScan {
+                child,
+                state,
+                f: move |s: &mut S, b: B| f(s, b),
+            })
+        })
     }
 
     /// Apply an async [`Operator`] to each element (may change type).
-    pub fn pipe<C: Send + 'static, T: Operator<B, C> + 'static>(self, op: T) -> Pipe<C> {
-        Pipe::wrap(Box::new(PullPipe {
-            operator: Box::new(op),
-            child: self.root,
-        }))
+    pub fn pipe<C: Send + 'static, T: Operator<B, C> + Sync + 'static>(self, op: T) -> Pipe<C> {
+        let parent = self.factory;
+        let op: Arc<dyn Operator<B, C> + Send + Sync> = Arc::new(op);
+        Pipe::from_factory(move || {
+            let child = parent();
+            Box::new(PullPipe {
+                operator: Arc::clone(&op),
+                child,
+            })
+        })
     }
 
     // ══════════════════════════════════════════════════════
@@ -130,23 +219,35 @@ impl<B: Send + 'static> Pipe<B> {
     /// Async per-element transform (like `map` but with `Future`).
     pub fn eval_map<C: Send + 'static, Fut: Future<Output = Result<C, PipeError>> + Send + 'static>(
         self,
-        f: impl Fn(B) -> Fut + Send + 'static,
+        f: impl Fn(B) -> Fut + Send + Sync + 'static,
     ) -> Pipe<C> {
-        Pipe::wrap(Box::new(PullEvalMap {
-            child: self.root,
-            f,
-        }))
+        let parent = self.factory;
+        let f = Arc::new(f);
+        Pipe::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullEvalMap {
+                child,
+                f: move |b| f(b),
+            })
+        })
     }
 
     /// Async per-element filter.
     pub fn eval_filter<Fut: Future<Output = Result<bool, PipeError>> + Send + 'static>(
         self,
-        f: impl Fn(&B) -> Fut + Send + 'static,
+        f: impl Fn(&B) -> Fut + Send + Sync + 'static,
     ) -> Self {
-        Self::wrap(Box::new(PullEvalFilter {
-            child: self.root,
-            f,
-        }))
+        let parent = self.factory;
+        let f = Arc::new(f);
+        Self::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullEvalFilter {
+                child,
+                f: move |b: &B| f(b),
+            })
+        })
     }
 
     /// Async side-effect on each element, pass through unchanged.
@@ -154,15 +255,21 @@ impl<B: Send + 'static> Pipe<B> {
     /// Requires `B: Sync` because elements are borrowed across await points.
     pub fn eval_tap<Fut: Future<Output = Result<(), PipeError>> + Send + 'static>(
         self,
-        f: impl Fn(&B) -> Fut + Send + 'static,
+        f: impl Fn(&B) -> Fut + Send + Sync + 'static,
     ) -> Self
     where
         B: Sync,
     {
-        Self::wrap(Box::new(PullEvalTap {
-            child: self.root,
-            f,
-        }))
+        let parent = self.factory;
+        let f = Arc::new(f);
+        Self::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullEvalTap {
+                child,
+                f: move |b: &B| f(b),
+            })
+        })
     }
 
     // ══════════════════════════════════════════════════════
@@ -170,66 +277,99 @@ impl<B: Send + 'static> Pipe<B> {
     // ══════════════════════════════════════════════════════
 
     /// Keep elements matching the predicate.
-    pub fn filter(self, f: impl Fn(&B) -> bool + Send + 'static) -> Self {
-        Self::wrap(Box::new(PullFilter {
-            child: self.root,
-            f,
-        }))
+    pub fn filter(self, f: impl Fn(&B) -> bool + Send + Sync + 'static) -> Self {
+        let parent = self.factory;
+        let f: Arc<dyn Fn(&B) -> bool + Send + Sync> = Arc::new(f);
+        Self::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullFilter {
+                child,
+                f: move |b: &B| f(b),
+            })
+        })
     }
 
     /// Side-effect on each element, pass through unchanged.
-    pub fn tap(self, f: impl Fn(&B) + Send + 'static) -> Self {
-        Self::wrap(Box::new(PullTap {
-            child: self.root,
-            f,
-        }))
+    pub fn tap(self, f: impl Fn(&B) + Send + Sync + 'static) -> Self {
+        let parent = self.factory;
+        let f: Arc<dyn Fn(&B) + Send + Sync> = Arc::new(f);
+        Self::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullTap {
+                child,
+                f: move |b: &B| f(b),
+            })
+        })
     }
 
     /// Alias for [`tap`](Self::tap) — follows Rust iterator convention.
-    pub fn inspect(self, f: impl Fn(&B) + Send + 'static) -> Self {
+    pub fn inspect(self, f: impl Fn(&B) + Send + Sync + 'static) -> Self {
         self.tap(f)
     }
 
     /// Take the first `n` elements.
     pub fn take(self, n: usize) -> Self {
-        Self::wrap(Box::new(PullTake {
-            child: self.root,
-            remaining: n,
-        }))
+        let parent = self.factory;
+        Self::from_factory(move || {
+            Box::new(PullTake {
+                child: parent(),
+                remaining: n,
+            })
+        })
     }
 
     /// Skip the first `n` elements.
     pub fn skip(self, n: usize) -> Self {
-        Self::wrap(Box::new(PullDrop {
-            child: self.root,
-            remaining: n,
-        }))
+        let parent = self.factory;
+        Self::from_factory(move || {
+            Box::new(PullDrop {
+                child: parent(),
+                remaining: n,
+            })
+        })
     }
 
     /// Take elements while predicate holds, then stop.
-    pub fn take_while(self, f: impl Fn(&B) -> bool + Send + 'static) -> Self {
-        Self::wrap(Box::new(PullTakeWhile {
-            child: self.root,
-            f,
-            done: false,
-        }))
+    pub fn take_while(self, f: impl Fn(&B) -> bool + Send + Sync + 'static) -> Self {
+        let parent = self.factory;
+        let f: Arc<dyn Fn(&B) -> bool + Send + Sync> = Arc::new(f);
+        Self::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullTakeWhile {
+                child,
+                f: move |b: &B| f(b),
+                done: false,
+            })
+        })
     }
 
     /// Skip elements while predicate holds, then pass through.
-    pub fn skip_while(self, f: impl Fn(&B) -> bool + Send + 'static) -> Self {
-        Self::wrap(Box::new(PullSkipWhile {
-            child: self.root,
-            f,
-            skipping: true,
-        }))
+    pub fn skip_while(self, f: impl Fn(&B) -> bool + Send + Sync + 'static) -> Self {
+        let parent = self.factory;
+        let f: Arc<dyn Fn(&B) -> bool + Send + Sync> = Arc::new(f);
+        Self::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullSkipWhile {
+                child,
+                f: move |b: &B| f(b),
+                skipping: true,
+            })
+        })
     }
 
     /// Group elements into fixed-size chunks, exposing batch boundaries.
     pub fn chunks(self, size: usize) -> Pipe<Vec<B>> {
-        Pipe::wrap(Box::new(PullChunks {
-            child: self.root,
-            size,
-        }))
+        let parent = self.factory;
+        Pipe::from_factory(move || {
+            Box::new(PullChunks {
+                child: parent(),
+                size,
+            })
+        })
     }
 
     // ══════════════════════════════════════════════════════
@@ -255,10 +395,14 @@ impl<B: Send + 'static> Pipe<B> {
 
     /// Sequential composition: all elements of `self`, then all elements of `other`.
     pub fn chain(self, other: Pipe<B>) -> Self {
-        Self::wrap(Box::new(PullChain {
-            first: Some(self.root),
-            second: Some(other.root),
-        }))
+        let first = self.factory;
+        let second = other.factory;
+        Self::from_factory(move || {
+            Box::new(PullChain {
+                first: Some(first()),
+                second: Some(second()),
+            })
+        })
     }
 
     /// Pair each element with its index: `(0, a), (1, b), (2, c), ...`
@@ -275,24 +419,40 @@ impl<B: Send + 'static> Pipe<B> {
     // ══════════════════════════════════════════════════════
 
     /// On error, switch to a fallback stream produced by `f`.
-    pub fn handle_error_with(self, f: impl Fn(PipeError) -> Pipe<B> + Send + 'static) -> Self {
-        Self::wrap(Box::new(PullHandleError {
-            child: self.root,
-            handler: Box::new(f),
-            fallback: None,
-        }))
+    pub fn handle_error_with(
+        self,
+        f: impl Fn(PipeError) -> Pipe<B> + Send + Sync + 'static,
+    ) -> Self {
+        let parent = self.factory;
+        let f = Arc::new(f);
+        Self::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullHandleError {
+                child,
+                handler: Box::new(move |e| f(e)),
+                fallback: None,
+            })
+        })
     }
 
     /// Retry the entire stream up to `n` times on error.
     ///
     /// On error, reconstructs the stream from scratch and retries.
     /// Requires a factory function that produces the stream.
-    pub fn retry(factory: impl Fn() -> Pipe<B> + Send + 'static, max_retries: usize) -> Self {
-        Self::wrap(Box::new(PullRetry {
-            factory: Box::new(factory),
-            current: None,
-            remaining: max_retries + 1,
-        }))
+    pub fn retry(
+        factory: impl Fn() -> Pipe<B> + Send + Sync + 'static,
+        max_retries: usize,
+    ) -> Self {
+        let factory = Arc::new(factory);
+        Self::from_factory(move || {
+            let factory = Arc::clone(&factory);
+            Box::new(PullRetry {
+                factory: Box::new(move || factory()),
+                current: None,
+                remaining: max_retries + 1,
+            })
+        })
     }
 
     // ══════════════════════════════════════════════════════
@@ -301,19 +461,23 @@ impl<B: Send + 'static> Pipe<B> {
 
     /// Buffer up to `n` chunks ahead of the consumer.
     ///
-    /// Spawns the upstream on a background task. Backpressure: the task
-    /// awaits when the buffer is full. Task is cancelled when Pipe is dropped.
+    /// Spawns the upstream on a background task at materialization time.
+    /// Backpressure: the task awaits when the buffer is full.
+    /// Task is cancelled when Pipe is dropped.
     pub fn prefetch(self, n: usize) -> Self {
-        let (tx, rx) = crate::channel::bounded::<B>(n);
-        let mut root = self.root;
-        let handle = tokio::spawn(async move {
-            while let Ok(Some(chunk)) = root.next_chunk().await {
-                if tx.send(chunk).await.is_err() {
-                    break;
+        let parent = self.factory;
+        Self::from_factory(move || {
+            let (tx, rx) = crate::channel::bounded::<B>(n);
+            let mut root = parent();
+            let handle = tokio::spawn(async move {
+                while let Ok(Some(chunk)) = root.next_chunk().await {
+                    if tx.send(chunk).await.is_err() {
+                        break;
+                    }
                 }
-            }
-        });
-        Self::wrap(Box::new(rx.with_abort(handle.abort_handle())))
+            });
+            Box::new(rx.with_abort(handle.abort_handle()))
+        })
     }
 
     /// Merge multiple pipes into one, interleaving in arrival order.
@@ -328,28 +492,30 @@ impl<B: Send + 'static> Pipe<B> {
             return pipes.into_iter().next().unwrap();
         }
 
-        let (merged_tx, merged_rx) = crate::channel::bounded::<B>(pipes.len());
-        let mut handles = Vec::with_capacity(pipes.len());
+        let factories: Vec<_> = pipes.into_iter().map(|p| p.factory).collect();
+        Self::from_factory(move || {
+            let (merged_tx, merged_rx) = crate::channel::bounded::<B>(factories.len());
+            let mut handles = Vec::with_capacity(factories.len());
 
-        for pipe in pipes {
-            let tx = merged_tx.clone();
-            let mut root = pipe.root;
-            let h = tokio::spawn(async move {
-                while let Ok(Some(chunk)) = root.next_chunk().await {
-                    if tx.send(chunk).await.is_err() {
-                        break;
+            for factory in &factories {
+                let tx = merged_tx.clone();
+                let mut root = factory();
+                let h = tokio::spawn(async move {
+                    while let Ok(Some(chunk)) = root.next_chunk().await {
+                        if tx.send(chunk).await.is_err() {
+                            break;
+                        }
                     }
-                }
-            });
-            handles.push(h.abort_handle());
-        }
-        drop(merged_tx);
+                });
+                handles.push(h.abort_handle());
+            }
+            drop(merged_tx);
 
-        // Wrap receiver with abort guards for all source tasks
-        Self::wrap(Box::new(GuardedPull {
-            inner: Box::new(merged_rx),
-            _guards: handles,
-        }))
+            Box::new(GuardedPull {
+                inner: Box::new(merged_rx),
+                _guards: handles,
+            })
+        })
     }
 
     /// Merge this pipe with another, interleaving in arrival order.
@@ -364,8 +530,9 @@ impl<B: Send + 'static> Pipe<B> {
     /// Each branch has a bounded buffer. The source blocks if ANY branch
     /// is full. Background task cancelled when ALL branches are dropped.
     ///
-    /// Internally, chunks are shared via `Arc<[B]>` so the source performs
-    /// zero clones per fan-out. Each consumer clones elements on pull.
+    /// **Note:** broadcast eagerly materializes the source. The returned
+    /// pipes are single-use — cloning a branch and materializing both
+    /// clones will panic.
     pub fn broadcast(self, n: usize, buffer_size: usize) -> Vec<Pipe<B>>
     where
         B: Clone + Sync,
@@ -377,24 +544,21 @@ impl<B: Send + 'static> Pipe<B> {
             return vec![self];
         }
 
-        // Arc-based channels: source shares one Arc<Vec<B>> across all branches,
-        // eliminating the per-branch chunk clone at send time.
         let mut senders = Vec::with_capacity(n);
-        let mut receivers: Vec<tokio::sync::mpsc::Receiver<std::sync::Arc<Vec<B>>>> =
+        let mut receivers: Vec<tokio::sync::mpsc::Receiver<Arc<Vec<B>>>> =
             Vec::with_capacity(n);
         for _ in 0..n {
-            let (tx, rx) =
-                tokio::sync::mpsc::channel::<std::sync::Arc<Vec<B>>>(buffer_size.max(1));
+            let (tx, rx) = tokio::sync::mpsc::channel::<Arc<Vec<B>>>(buffer_size.max(1));
             senders.push(tx);
             receivers.push(rx);
         }
 
-        let mut root = self.root;
+        let mut root = (self.factory)();
         let handle = tokio::spawn(async move {
             while let Ok(Some(chunk)) = root.next_chunk().await {
-                let shared: std::sync::Arc<Vec<B>> = std::sync::Arc::new(chunk);
+                let shared: Arc<Vec<B>> = Arc::new(chunk);
                 for tx in &senders {
-                    if tx.send(std::sync::Arc::clone(&shared)).await.is_err() {
+                    if tx.send(Arc::clone(&shared)).await.is_err() {
                         return;
                     }
                 }
@@ -405,10 +569,19 @@ impl<B: Send + 'static> Pipe<B> {
         receivers
             .into_iter()
             .map(|rx| {
-                Pipe::wrap(Box::new(BroadcastReceiver {
-                    rx,
-                    abort: Some(abort.clone()),
-                }))
+                let slot = Arc::new(std::sync::Mutex::new(Some(rx)));
+                let abort = abort.clone();
+                Pipe::from_factory(move || {
+                    let rx = slot
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("broadcast branch already consumed");
+                    Box::new(BroadcastReceiver {
+                        rx,
+                        abort: Some(abort.clone()),
+                    })
+                })
             })
             .collect()
     }
@@ -418,7 +591,9 @@ impl<B: Send + 'static> Pipe<B> {
     /// Buffers leftover elements across chunk boundaries so no data is
     /// lost when left and right chunks have different sizes.
     pub fn zip<C: Send + 'static>(self, other: Pipe<C>) -> Pipe<(B, C)> {
-        Pipe::wrap(Box::new(PullZip::new(self.root, other.root)))
+        let left = self.factory;
+        let right = other.factory;
+        Pipe::from_factory(move || Box::new(PullZip::new(left(), right())))
     }
 
     /// Hash-partition elements across N branches.
@@ -427,6 +602,10 @@ impl<B: Send + 'static> Pipe<B> {
     /// No cloning — elements are moved. Each branch has a bounded buffer
     /// of `buffer_size` chunks. Backpressure: source blocks if any branch
     /// is full. Background task cancelled when all branches are dropped.
+    ///
+    /// **Note:** partition eagerly materializes the source. The returned
+    /// pipes are single-use — cloning a branch and materializing both
+    /// clones will panic.
     ///
     /// ```ignore
     /// let partitions = pipe.partition(4, 2, |x| *x as u64);
@@ -455,7 +634,7 @@ impl<B: Send + 'static> Pipe<B> {
             receivers.push(rx);
         }
 
-        let mut root = self.root;
+        let mut root = (self.factory)();
         let handle = tokio::spawn(async move {
             while let Ok(Some(chunk)) = root.next_chunk().await {
                 let mut buckets: Vec<Vec<B>> = (0..n).map(|_| Vec::new()).collect();
@@ -474,7 +653,18 @@ impl<B: Send + 'static> Pipe<B> {
         let abort = handle.abort_handle();
         receivers
             .into_iter()
-            .map(|rx| Pipe::wrap(Box::new(rx.with_abort(abort.clone()))))
+            .map(|rx| {
+                let slot: Arc<std::sync::Mutex<Option<crate::channel::Receiver<B>>>> =
+                    Arc::new(std::sync::Mutex::new(Some(rx.with_abort(abort.clone()))));
+                Pipe::from_factory(move || {
+                    let rx = slot
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("partition branch already consumed");
+                    Box::new(rx)
+                })
+            })
             .collect()
     }
 
@@ -482,8 +672,9 @@ impl<B: Send + 'static> Pipe<B> {
     // Internal
     // ══════════════════════════════════════════════════════
 
+    /// Materialize the pipeline into a pull operator chain.
     pub(crate) fn into_pull(self) -> Box<dyn PullOperator<B>> {
-        self.root
+        (self.factory)()
     }
 
     // ══════════════════════════════════════════════════════
@@ -491,31 +682,35 @@ impl<B: Send + 'static> Pipe<B> {
     // ══════════════════════════════════════════════════════
 
     /// Collect all elements into a `Vec`.
-    pub async fn collect(mut self) -> Result<Vec<B>, PipeError> {
-        collect_all(&mut *self.root).await
+    pub async fn collect(self) -> Result<Vec<B>, PipeError> {
+        let mut root = (self.factory)();
+        collect_all(&mut *root).await
     }
 
     /// Reduce all elements to a single value.
     pub async fn fold<C: Send + 'static>(
-        mut self,
+        self,
         init: C,
         f: impl Fn(C, B) -> C + Send,
     ) -> Result<C, PipeError> {
-        fold_all(&mut *self.root, init, f).await
+        let mut root = (self.factory)();
+        fold_all(&mut *root, init, f).await
     }
 
     /// Count elements.
-    pub async fn count(mut self) -> Result<usize, PipeError> {
+    pub async fn count(self) -> Result<usize, PipeError> {
+        let mut root = (self.factory)();
         let mut n = 0usize;
-        while let Some(chunk) = self.root.next_chunk().await? {
+        while let Some(chunk) = root.next_chunk().await? {
             n += chunk.len();
         }
         Ok(n)
     }
 
     /// Run a side-effect for each element, discarding the values.
-    pub async fn for_each(mut self, f: impl Fn(B) + Send) -> Result<(), PipeError> {
-        while let Some(chunk) = self.root.next_chunk().await? {
+    pub async fn for_each(self, f: impl Fn(B) + Send) -> Result<(), PipeError> {
+        let mut root = (self.factory)();
+        while let Some(chunk) = root.next_chunk().await? {
             for item in chunk {
                 f(item);
             }
@@ -524,17 +719,19 @@ impl<B: Send + 'static> Pipe<B> {
     }
 
     /// Return the first element, or `None` if empty.
-    pub async fn first(mut self) -> Result<Option<B>, PipeError> {
-        match self.root.next_chunk().await? {
+    pub async fn first(self) -> Result<Option<B>, PipeError> {
+        let mut root = (self.factory)();
+        match root.next_chunk().await? {
             Some(chunk) => Ok(chunk.into_iter().next()),
             None => Ok(None),
         }
     }
 
     /// Return the last element, or `None` if empty.
-    pub async fn last(mut self) -> Result<Option<B>, PipeError> {
+    pub async fn last(self) -> Result<Option<B>, PipeError> {
+        let mut root = (self.factory)();
         let mut last = None;
-        while let Some(chunk) = self.root.next_chunk().await? {
+        while let Some(chunk) = root.next_chunk().await? {
             if let Some(item) = chunk.into_iter().last() {
                 last = Some(item);
             }
@@ -544,7 +741,7 @@ impl<B: Send + 'static> Pipe<B> {
 }
 
 /// Flatten a `Pipe<Vec<B>>` back to `Pipe<B>`.
-impl<B: Send + 'static> Pipe<Vec<B>> {
+impl<B: Clone + Send + Sync + 'static> Pipe<Vec<B>> {
     /// Flatten chunked elements back to individual elements.
     pub fn unchunks(self) -> Pipe<B> {
         self.flat_map(Pipe::from_iter)
@@ -863,7 +1060,7 @@ impl<B: Send + 'static> PullOperator<B> for PullHandleError<B> {
                 Err(e) => {
                     // Switch to fallback stream
                     let pipe = (self.handler)(e);
-                    self.fallback = Some(pipe.root);
+                    self.fallback = Some(pipe.into_pull());
                     // Pull first chunk from fallback
                     self.fallback.as_mut().unwrap().next_chunk().await
                 }
@@ -889,7 +1086,7 @@ impl<B: Send + 'static> PullOperator<B> for PullRetry<B> {
                         return Err("retry exhausted".into());
                     }
                     self.remaining -= 1;
-                    self.current = Some((self.factory)().root);
+                    self.current = Some((self.factory)().into_pull());
                 }
                 match self.current.as_mut().unwrap().next_chunk().await {
                     Ok(chunk) => return Ok(chunk),
@@ -1169,11 +1366,11 @@ mod tests {
             }
         }
 
-        let result = Pipe::from_pull(Box::new(Counter {
+        let result = Pipe::from_pull_once(Counter {
             current: 1,
             max: 5,
             chunk_size: 2,
-        }))
+        })
         .map(|x| x * 10)
         .collect()
         .await
@@ -1202,7 +1399,7 @@ mod tests {
             }
         }
 
-        let result = Pipe::from_pull(Box::new(Naturals { n: 0 }))
+        let result = Pipe::from_pull_once(Naturals { n: 0 })
             .filter(|x| x % 3 == 0)
             .take(4)
             .collect()
@@ -1435,10 +1632,10 @@ mod tests {
             }
         }
 
-        let result = Pipe::from_pull(Box::new(FailAfter {
+        let result = Pipe::from_pull_once(FailAfter {
             count: 2,
             yielded: 0,
-        }))
+        })
         .handle_error_with(|_| Pipe::from_iter(vec![99]))
         .collect()
         .await
@@ -1582,7 +1779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn from_pull_without_boxing() {
+    async fn from_pull_once_no_boxing() {
         use crate::pull::{ChunkFut, PullOperator};
 
         struct Trio;
@@ -1592,8 +1789,46 @@ mod tests {
             }
         }
 
-        // No Box::new needed
-        let result = Pipe::from_pull(Trio).take(3).collect().await.unwrap();
+        let result = Pipe::from_pull_once(Trio).take(3).collect().await.unwrap();
         assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn from_pull_factory() {
+        let pipe = Pipe::from_pull(|| Box::new(crate::pull::PullSource::new(vec![1, 2, 3])));
+        // Clone the pipe and collect from both
+        let clone = pipe.clone();
+        let a = pipe.collect().await.unwrap();
+        let b = clone.collect().await.unwrap();
+        assert_eq!(a, vec![1, 2, 3]);
+        assert_eq!(b, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn clone_produces_independent_results() {
+        let pipe = Pipe::from_iter(vec![1, 2, 3, 4, 5])
+            .filter(|x| x % 2 == 0)
+            .map(|x| x * 10);
+
+        let clone = pipe.clone();
+
+        let a = pipe.collect().await.unwrap();
+        let b = clone.collect().await.unwrap();
+        assert_eq!(a, vec![20, 40]);
+        assert_eq!(b, vec![20, 40]);
+    }
+
+    #[tokio::test]
+    async fn clone_with_scan_independent_state() {
+        let pipe = Pipe::from_iter(vec![1, 2, 3])
+            .scan(0i64, |acc, x| { *acc += x; *acc });
+
+        let clone = pipe.clone();
+
+        let a = pipe.collect().await.unwrap();
+        let b = clone.collect().await.unwrap();
+        // Both see independent accumulator state
+        assert_eq!(a, vec![1, 3, 6]);
+        assert_eq!(b, vec![1, 3, 6]);
     }
 }

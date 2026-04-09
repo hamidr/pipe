@@ -415,7 +415,7 @@ impl<
 // ── Pipe (per-element async Operator<A, B>) ───────────
 
 pub(crate) struct PullPipe<A: Send + 'static, B: Send + 'static> {
-    pub(crate) operator: Box<dyn Operator<A, B>>,
+    pub(crate) operator: std::sync::Arc<dyn Operator<A, B> + Send + Sync>,
     pub(crate) child: Box<dyn PullOperator<A>>,
 }
 
@@ -571,7 +571,7 @@ mod tests {
     async fn pipe_changes_type() {
         let src: Box<dyn PullOperator<i64>> = Box::new(PullSource::new(vec![1, 2, 3]));
         let mut pipe = PullPipe {
-            operator: Box::new(ToStringOp),
+            operator: std::sync::Arc::new(ToStringOp),
             child: src,
         };
         let chunk: Vec<String> = pipe.next_chunk().await.unwrap().unwrap();
