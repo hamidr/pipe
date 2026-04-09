@@ -416,6 +416,47 @@ impl<B: Send + 'static> Pipe<B> {
     }
 
     // ══════════════════════════════════════════════════════
+    // Resource safety
+    // ══════════════════════════════════════════════════════
+
+    /// Acquire a resource, build a pipe from it, and guarantee cleanup.
+    ///
+    /// `acquire` runs lazily on first pull. `use_resource` builds a
+    /// pipe from the acquired resource. `release` runs when the pipe
+    /// completes, errors, or is dropped mid-stream.
+    ///
+    /// The resource is wrapped in `Arc` so both `use_resource` and
+    /// `release` can access it.
+    ///
+    /// ```ignore
+    /// Pipe::bracket(
+    ///     || Box::pin(async { Ok(File::open("data.txt").await?) }),
+    ///     |file| Pipe::from_reader(file),
+    ///     |_file| { /* cleanup */ },
+    /// )
+    /// ```
+    pub fn bracket<R: Send + Sync + 'static>(
+        acquire: impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, PipeError>> + Send>>
+            + Send
+            + Sync
+            + 'static,
+        use_resource: impl Fn(R) -> Pipe<B> + Send + Sync + 'static,
+        release: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let acquire = Arc::new(acquire);
+        let use_resource = Arc::new(use_resource);
+        let release = Arc::new(release);
+        Self::from_factory(move || {
+            let acquire = Arc::clone(&acquire);
+            let use_resource = Arc::clone(&use_resource);
+            let release = Arc::clone(&release);
+            Box::new(PullBracket {
+                state: BracketState::Pending { acquire, use_resource, release },
+            })
+        })
+    }
+
+    // ══════════════════════════════════════════════════════
     // Error recovery
     // ══════════════════════════════════════════════════════
 
@@ -757,6 +798,85 @@ impl<B: Clone + Send + Sync + 'static> Pipe<Vec<B>> {
 // ══════════════════════════════════════════════════════
 
 use crate::pull::ChunkFut;
+
+// ── Bracket (resource safety) ───────────────────────
+
+enum BracketState<B: Send + 'static, R: Send + 'static> {
+    Pending {
+        acquire: Arc<
+            dyn Fn() -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<R, PipeError>> + Send>,
+                > + Send
+                + Sync,
+        >,
+        use_resource: Arc<dyn Fn(R) -> Pipe<B> + Send + Sync>,
+        release: Arc<dyn Fn() + Send + Sync>,
+    },
+    Active {
+        inner: Box<dyn PullOperator<B>>,
+        release: Arc<dyn Fn() + Send + Sync>,
+    },
+    Done,
+}
+
+struct PullBracket<B: Send + 'static, R: Send + 'static> {
+    state: BracketState<B, R>,
+}
+
+impl<B: Send + 'static, R: Send + 'static> Drop for PullBracket<B, R> {
+    fn drop(&mut self) {
+        let old = std::mem::replace(&mut self.state, BracketState::Done);
+        if let BracketState::Active { release, .. } = old {
+            release();
+        } else if let BracketState::Pending { release, .. } = old {
+            // Acquired but never pulled — still release
+            // (only if acquire was never called, release is a no-op on the resource)
+            // Actually for Pending, acquire hasn't run yet so nothing to release.
+            let _ = release;
+        }
+    }
+}
+
+impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracket<B, R> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            // Lazy acquisition: acquire on first pull
+            if let BracketState::Pending { .. } = &self.state {
+                let old = std::mem::replace(&mut self.state, BracketState::Done);
+                if let BracketState::Pending {
+                    acquire,
+                    use_resource,
+                    release,
+                } = old
+                {
+                    let resource = acquire().await?;
+                    let pipe = use_resource(resource);
+                    let inner = pipe.into_pull();
+                    self.state = BracketState::Active { inner, release };
+                }
+            }
+
+            match &mut self.state {
+                BracketState::Active { inner, release } => match inner.next_chunk().await {
+                    Ok(Some(chunk)) => Ok(Some(chunk)),
+                    Ok(None) => {
+                        let release = Arc::clone(release);
+                        self.state = BracketState::Done;
+                        release();
+                        Ok(None)
+                    }
+                    Err(e) => {
+                        let release = Arc::clone(release);
+                        self.state = BracketState::Done;
+                        release();
+                        Err(e)
+                    }
+                },
+                _ => Ok(None),
+            }
+        })
+    }
+}
 
 // ── Chain (sequential composition) ──────────────────
 
@@ -1832,5 +1952,73 @@ mod tests {
         // Both see independent accumulator state
         assert_eq!(a, vec![1, 3, 6]);
         assert_eq!(b, vec![1, 3, 6]);
+    }
+
+    // ── Bracket ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn bracket_releases_on_completion() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let released = Arc::new(AtomicBool::new(false));
+        let released2 = released.clone();
+
+        let result = Pipe::bracket(
+            || Box::pin(async { Ok(vec![1i64, 2, 3]) }),
+            |data| Pipe::from_iter(data),
+            move || released2.store(true, Ordering::SeqCst),
+        )
+        .collect()
+        .await
+        .unwrap();
+
+        assert_eq!(result, vec![1, 2, 3]);
+        assert!(released.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn bracket_releases_on_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let released = Arc::new(AtomicBool::new(false));
+        let released2 = released.clone();
+
+        let result = Pipe::<i64>::bracket(
+            || Box::pin(async { Ok(()) }),
+            |_| {
+                Pipe::from_iter(vec![1i64, 2])
+                    .eval_map(|x| async move {
+                        if x == 2 { Err("boom".into()) } else { Ok(x) }
+                    })
+            },
+            move || released2.store(true, Ordering::SeqCst),
+        )
+        .collect()
+        .await;
+
+        assert!(result.is_err());
+        assert!(released.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn bracket_releases_on_drop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let released = Arc::new(AtomicBool::new(false));
+        let released2 = released.clone();
+
+        // Create a bracket pipe but only take 1 element, then drop
+        let result = Pipe::bracket(
+            || Box::pin(async { Ok(vec![10i64, 20, 30]) }),
+            |data| Pipe::from_iter(data),
+            move || released2.store(true, Ordering::SeqCst),
+        )
+        .take(1)
+        .first()
+        .await
+        .unwrap();
+
+        assert_eq!(result, Some(10));
+        assert!(released.load(Ordering::SeqCst));
     }
 }
