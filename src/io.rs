@@ -170,6 +170,10 @@ impl Pipe<Vec<u8>> {
     ///
     /// Each element is a `Vec<u8>` buffer read from the source.
     /// Uses an 8 KiB read buffer by default.
+    ///
+    /// The resulting pipe is single-use — cloning and materializing
+    /// both clones will panic. Use a factory closure with
+    /// [`from_pull`](Pipe::from_pull) for cloneable I/O pipes.
     pub fn from_reader(reader: impl AsyncRead + Unpin + Send + 'static) -> Self {
         Self::from_reader_sized(reader, DEFAULT_BUF_SIZE)
     }
@@ -179,7 +183,7 @@ impl Pipe<Vec<u8>> {
         reader: impl AsyncRead + Unpin + Send + 'static,
         buf_size: usize,
     ) -> Self {
-        Pipe::from_pull(Box::new(PullReader { reader, buf_size }))
+        Pipe::from_pull_once(PullReader { reader, buf_size })
     }
 
     /// Split byte buffers into lines (`\n` or `\r\n` delimited).
@@ -187,7 +191,8 @@ impl Pipe<Vec<u8>> {
     /// Handles lines split across read boundaries. The final line is
     /// emitted even without a trailing newline. Uses lossy UTF-8 conversion.
     pub fn lines(self) -> Pipe<String> {
-        Pipe::from_pull(Box::new(PullLines::new(self.into_pull())))
+        let parent = self.factory;
+        Pipe::from_factory(move || Box::new(PullLines::new(parent())))
     }
 }
 
