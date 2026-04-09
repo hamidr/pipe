@@ -36,6 +36,7 @@
 //! }
 //! ```
 
+pub mod cancel;
 pub mod channel;
 pub mod io;
 pub mod operator;
@@ -47,6 +48,7 @@ pub mod transform;
 
 pub mod prelude {
     //! Re-exports for convenience.
+    pub use crate::cancel::CancelToken;
     pub use crate::channel::{bounded, Receiver, Sender};
     pub use crate::operator::{Operator, PinFut};
     pub use crate::pipeline::{Emitter, Pipe};
