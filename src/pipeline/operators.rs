@@ -346,4 +346,41 @@ impl<B: Send + 'static> Pipe<B> {
             (i, item)
         })
     }
+
+    /// Wrap each element in `Ok`, catching errors as `Err` elements.
+    ///
+    /// Unlike normal error propagation which stops the pipe, `attempt`
+    /// converts errors into elements so the pipe continues.
+    pub fn attempt(self) -> Pipe<Result<B, crate::pull::PipeError>> {
+        let parent = self.factory;
+        Pipe::from_factory(move || {
+            Box::new(super::pull_ops::PullAttempt::new(parent()))
+        })
+    }
+
+    /// Wrap each element in `Some`, then emit `None` at the end.
+    ///
+    /// Paired with [`un_none_terminate`](Pipe::<Option<B>>::un_none_terminate)
+    /// for Option-based stream termination protocols.
+    pub fn none_terminate(self) -> Pipe<Option<B>> {
+        let parent = self.factory;
+        Pipe::from_factory(move || {
+            Box::new(super::pull_ops::PullNoneTerminate {
+                child: parent(),
+                done: false,
+            })
+        })
+    }
+}
+
+/// Unwrap `Option`-wrapped elements, stopping at the first `None`.
+impl<B: Send + 'static> Pipe<Option<B>> {
+    pub fn un_none_terminate(self) -> Pipe<B> {
+        let parent = self.factory;
+        Pipe::from_factory(move || {
+            Box::new(super::pull_ops::PullUnNoneTerminate {
+                child: parent(),
+            })
+        })
+    }
 }

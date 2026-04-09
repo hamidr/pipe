@@ -860,3 +860,90 @@ impl<B: Send + 'static> PullOperator<B> for PullRetry<B> {
         })
     }
 }
+
+// ── Attempt (error → element) ───────────────────────
+
+pub(super) struct PullAttempt<B: Send + 'static> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    done: bool,
+}
+
+impl<B: Send + 'static> PullAttempt<B> {
+    pub(super) fn new(child: Box<dyn PullOperator<B>>) -> Self {
+        Self { child, done: false }
+    }
+}
+
+impl<B: Send + 'static> PullOperator<Result<B, PipeError>> for PullAttempt<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, Result<B, PipeError>> {
+        Box::pin(async move {
+            if self.done {
+                return Ok(None);
+            }
+            match self.child.next_chunk().await {
+                Ok(Some(chunk)) => Ok(Some(chunk.into_iter().map(Ok).collect())),
+                Ok(None) => Ok(None),
+                Err(e) => {
+                    self.done = true;
+                    Ok(Some(vec![Err(e)]))
+                }
+            }
+        })
+    }
+}
+
+// ── NoneTerminate (wrap in Some, emit None at end) ──
+
+pub(super) struct PullNoneTerminate<B: Send + 'static> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) done: bool,
+}
+
+impl<B: Send + 'static> PullOperator<Option<B>> for PullNoneTerminate<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, Option<B>> {
+        Box::pin(async move {
+            if self.done {
+                return Ok(None);
+            }
+            match self.child.next_chunk().await? {
+                Some(chunk) => Ok(Some(chunk.into_iter().map(Some).collect())),
+                None => {
+                    self.done = true;
+                    Ok(Some(vec![None]))
+                }
+            }
+        })
+    }
+}
+
+// ── UnNoneTerminate (stop at first None) ────────────
+
+pub(super) struct PullUnNoneTerminate<B: Send + 'static> {
+    pub(super) child: Box<dyn PullOperator<Option<B>>>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullUnNoneTerminate<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    let mut result = Vec::with_capacity(chunk.len());
+                    for item in chunk {
+                        match item {
+                            Some(val) => result.push(val),
+                            None => {
+                                return if result.is_empty() {
+                                    Ok(None)
+                                } else {
+                                    Ok(Some(result))
+                                };
+                            }
+                        }
+                    }
+                    if result.is_empty() { Ok(None) } else { Ok(Some(result)) }
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}

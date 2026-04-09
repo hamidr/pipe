@@ -124,6 +124,43 @@ impl<B: Send + 'static> Pipe<B> {
         Pipe::from_factory(move || Box::new(PullZip::new(left(), right())))
     }
 
+    /// Zip with a custom combiner function instead of producing tuples.
+    pub fn zip_with<C: Send + 'static, D: Send + 'static>(
+        self,
+        other: Pipe<C>,
+        f: impl Fn(B, C) -> D + Send + Sync + 'static,
+    ) -> Pipe<D> {
+        self.zip(other).map(move |(a, b)| f(a, b))
+    }
+
+    /// Broadcast to N branches and apply a different transform to each.
+    ///
+    /// Each transform receives one branch of the broadcast. Results
+    /// from all branches are merged (interleaved by arrival order).
+    pub fn broadcast_through(
+        self,
+        n: usize,
+        buffer_size: usize,
+        transforms: Vec<Box<dyn FnOnce(Pipe<B>) -> Pipe<B> + Send>>,
+    ) -> Self
+    where
+        B: Clone + Sync,
+    {
+        assert_eq!(
+            n,
+            transforms.len(),
+            "broadcast_through: n ({n}) must equal transforms.len() ({})",
+            transforms.len()
+        );
+        let branches = self.broadcast(n, buffer_size);
+        let transformed: Vec<Pipe<B>> = branches
+            .into_iter()
+            .zip(transforms)
+            .map(|(branch, f)| f(branch))
+            .collect();
+        Pipe::merge(transformed)
+    }
+
     /// Hash-partition elements across N branches.
     ///
     /// Each element goes to exactly one branch: `key(&element) % n`.
