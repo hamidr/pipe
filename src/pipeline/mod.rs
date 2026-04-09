@@ -1283,4 +1283,45 @@ mod tests {
         assert_eq!(result, vec![11, 22, 33]);
     }
 
+    // ── concurrently ─────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrently_main_output_preserved() {
+        // Background is a no-op pipe — just verify main output is correct
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .concurrently(Pipe::from_iter(vec![99, 98, 97]))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrently_propagates_bg_error() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        // Background that errors immediately
+        struct BgFail;
+        impl PullOperator<i64> for BgFail {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async { Err("bg-boom".into()) })
+            }
+        }
+
+        // Slow main so background has time to error
+        let main_pipe = Pipe::generate(|tx| async move {
+            for i in 1..=100 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                tx.emit(i).await?;
+            }
+            Ok(())
+        });
+
+        let result = main_pipe
+            .concurrently(Pipe::from_pull_once(BgFail))
+            .collect()
+            .await;
+
+        assert!(result.is_err());
+    }
 }
