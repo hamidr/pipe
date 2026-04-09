@@ -288,15 +288,24 @@ pub(crate) struct PullFilter<B, F> {
     pub(crate) f: F,
 }
 
+/// Max consecutive empty chunks before yielding to the runtime.
+pub(crate) const YIELD_AFTER_EMPTY: usize = 32;
+
 impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B> for PullFilter<B, F> {
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
         Box::pin(async move {
+            let mut empty_runs = 0usize;
             loop {
                 match self.child.next_chunk().await? {
                     Some(chunk) => {
                         let filtered: Vec<B> = chunk.into_iter().filter(|b| (self.f)(b)).collect();
                         if !filtered.is_empty() {
                             return Ok(Some(filtered));
+                        }
+                        empty_runs += 1;
+                        if empty_runs >= YIELD_AFTER_EMPTY {
+                            empty_runs = 0;
+                            tokio::task::yield_now().await;
                         }
                     }
                     None => return Ok(None),
@@ -318,6 +327,7 @@ impl<A: Send + 'static, B: Send + 'static, F: Fn(A) -> Option<B> + Send + 'stati
 {
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
         Box::pin(async move {
+            let mut empty_runs = 0usize;
             loop {
                 match self.child.next_chunk().await? {
                     Some(chunk) => {
@@ -325,6 +335,11 @@ impl<A: Send + 'static, B: Send + 'static, F: Fn(A) -> Option<B> + Send + 'stati
                             chunk.into_iter().filter_map(|a| (self.f)(a)).collect();
                         if !result.is_empty() {
                             return Ok(Some(result));
+                        }
+                        empty_runs += 1;
+                        if empty_runs >= YIELD_AFTER_EMPTY {
+                            empty_runs = 0;
+                            tokio::task::yield_now().await;
                         }
                     }
                     None => return Ok(None),

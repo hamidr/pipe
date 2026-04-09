@@ -1212,7 +1212,9 @@ where
     F: Fn(&B) -> Fut + Send + 'static,
 {
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        use crate::pull::YIELD_AFTER_EMPTY;
         Box::pin(async move {
+            let mut empty_runs = 0usize;
             loop {
                 match self.child.next_chunk().await? {
                     Some(chunk) => {
@@ -1224,6 +1226,11 @@ where
                         }
                         if !filtered.is_empty() {
                             return Ok(Some(filtered));
+                        }
+                        empty_runs += 1;
+                        if empty_runs >= YIELD_AFTER_EMPTY {
+                            empty_runs = 0;
+                            tokio::task::yield_now().await;
                         }
                     }
                     None => return Ok(None),
