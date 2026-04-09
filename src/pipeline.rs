@@ -1085,7 +1085,7 @@ impl<B: Send + 'static> PullOperator<B> for PullRetry<B> {
             loop {
                 if self.current.is_none() {
                     if self.remaining == 0 {
-                        return Err("retry exhausted".into());
+                        return Err(PipeError::RetryExhausted);
                     }
                     self.remaining -= 1;
                     self.current = Some((self.factory)().into_pull());

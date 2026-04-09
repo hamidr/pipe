@@ -14,8 +14,67 @@ use std::pin::Pin;
 
 use crate::operator::Operator;
 
-/// Error type alias.
-pub type PipeError = Box<dyn std::error::Error + Send + Sync>;
+/// Error type for pipe operations.
+///
+/// Known error sources get dedicated variants for pattern matching.
+/// User-defined errors (from `eval_map`, `eval_filter`, custom
+/// `PullOperator` implementations) land in [`Custom`](PipeError::Custom).
+#[derive(Debug)]
+pub enum PipeError {
+    /// I/O error from `AsyncRead`/`AsyncWrite` operations.
+    Io(std::io::Error),
+    /// Internal channel closed unexpectedly (producer or consumer dropped).
+    Closed,
+    /// All retry attempts exhausted.
+    RetryExhausted,
+    /// User-defined or third-party error.
+    Custom(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl std::fmt::Display for PipeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PipeError::Io(e) => write!(f, "I/O error: {e}"),
+            PipeError::Closed => write!(f, "channel closed"),
+            PipeError::RetryExhausted => write!(f, "retry exhausted"),
+            PipeError::Custom(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for PipeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            PipeError::Io(e) => Some(e),
+            PipeError::Custom(e) => Some(&**e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for PipeError {
+    fn from(e: std::io::Error) -> Self {
+        PipeError::Io(e)
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for PipeError {
+    fn from(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        PipeError::Custom(e)
+    }
+}
+
+impl From<String> for PipeError {
+    fn from(s: String) -> Self {
+        PipeError::Custom(s.into())
+    }
+}
+
+impl From<&str> for PipeError {
+    fn from(s: &str) -> Self {
+        PipeError::Custom(s.into())
+    }
+}
 
 /// Future returning an optional chunk of elements.
 pub type ChunkFut<'a, B> =

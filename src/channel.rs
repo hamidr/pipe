@@ -36,7 +36,7 @@ impl<B: Send + 'static> Sender<B> {
         self.tx
             .send(chunk)
             .await
-            .map_err(|_| "channel receiver dropped".into())
+            .map_err(|_| PipeError::Closed)
     }
 }
 
