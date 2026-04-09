@@ -617,7 +617,7 @@ impl<B: Send + 'static> Pipe<B> {
         self,
         n: usize,
         buffer_size: usize,
-        key: impl Fn(&B) -> u64 + Send + 'static,
+        key: impl Fn(&B) -> u64 + Send + Sync + 'static,
     ) -> Vec<Pipe<B>> {
         if n == 0 {
             return vec![];
