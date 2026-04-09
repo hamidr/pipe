@@ -70,8 +70,8 @@ impl<B: Send + 'static> Pipe<B> {
     }
 
     /// Create a stream from a custom [`PullOperator`] implementation.
-    pub fn from_pull(op: Box<dyn PullOperator<B>>) -> Self {
-        Self::wrap(op)
+    pub fn from_pull(op: impl PullOperator<B> + 'static) -> Self {
+        Self::wrap(Box::new(op))
     }
 
     // ══════════════════════════════════════════════════════
@@ -185,6 +185,11 @@ impl<B: Send + 'static> Pipe<B> {
         }))
     }
 
+    /// Alias for [`tap`](Self::tap) — follows Rust iterator convention.
+    pub fn inspect(self, f: impl Fn(&B) + Send + 'static) -> Self {
+        self.tap(f)
+    }
+
     /// Take the first `n` elements.
     pub fn take(self, n: usize) -> Self {
         Self::wrap(Box::new(PullTake {
@@ -246,6 +251,23 @@ impl<B: Send + 'static> Pipe<B> {
     /// ```
     pub fn through<C: Send + 'static>(self, f: impl FnOnce(Pipe<B>) -> Pipe<C>) -> Pipe<C> {
         f(self)
+    }
+
+    /// Sequential composition: all elements of `self`, then all elements of `other`.
+    pub fn chain(self, other: Pipe<B>) -> Self {
+        Self::wrap(Box::new(PullChain {
+            first: Some(self.root),
+            second: Some(other.root),
+        }))
+    }
+
+    /// Pair each element with its index: `(0, a), (1, b), (2, c), ...`
+    pub fn enumerate(self) -> Pipe<(usize, B)> {
+        self.scan(0usize, |idx, item| {
+            let i = *idx;
+            *idx += 1;
+            (i, item)
+        })
     }
 
     // ══════════════════════════════════════════════════════
@@ -328,6 +350,13 @@ impl<B: Send + 'static> Pipe<B> {
             inner: Box::new(merged_rx),
             _guards: handles,
         }))
+    }
+
+    /// Merge this pipe with another, interleaving in arrival order.
+    ///
+    /// Shorthand for `Pipe::merge(vec![self, other])`.
+    pub fn merge_with(self, other: Pipe<B>) -> Self {
+        Pipe::merge(vec![self, other])
     }
 
     /// Fan-out: clone each element to `n` branches.
@@ -483,6 +512,35 @@ impl<B: Send + 'static> Pipe<B> {
         }
         Ok(n)
     }
+
+    /// Run a side-effect for each element, discarding the values.
+    pub async fn for_each(mut self, f: impl Fn(B) + Send) -> Result<(), PipeError> {
+        while let Some(chunk) = self.root.next_chunk().await? {
+            for item in chunk {
+                f(item);
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the first element, or `None` if empty.
+    pub async fn first(mut self) -> Result<Option<B>, PipeError> {
+        match self.root.next_chunk().await? {
+            Some(chunk) => Ok(chunk.into_iter().next()),
+            None => Ok(None),
+        }
+    }
+
+    /// Return the last element, or `None` if empty.
+    pub async fn last(mut self) -> Result<Option<B>, PipeError> {
+        let mut last = None;
+        while let Some(chunk) = self.root.next_chunk().await? {
+            if let Some(item) = chunk.into_iter().last() {
+                last = Some(item);
+            }
+        }
+        Ok(last)
+    }
 }
 
 /// Flatten a `Pipe<Vec<B>>` back to `Pipe<B>`.
@@ -498,6 +556,37 @@ impl<B: Send + 'static> Pipe<Vec<B>> {
 // ══════════════════════════════════════════════════════
 
 use crate::pull::ChunkFut;
+
+// ── Chain (sequential composition) ──────────────────
+
+struct PullChain<B: Send + 'static> {
+    first: Option<Box<dyn PullOperator<B>>>,
+    second: Option<Box<dyn PullOperator<B>>>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullChain<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            if let Some(ref mut first) = self.first {
+                match first.next_chunk().await? {
+                    Some(chunk) => return Ok(Some(chunk)),
+                    None => {
+                        self.first = None;
+                    }
+                }
+            }
+            if let Some(ref mut second) = self.second {
+                match second.next_chunk().await? {
+                    Some(chunk) => return Ok(Some(chunk)),
+                    None => {
+                        self.second = None;
+                    }
+                }
+            }
+            Ok(None)
+        })
+    }
+}
 
 // ── GuardedPull (cancellation on drop) ───────────────
 
@@ -1389,5 +1478,122 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, vec![10, 20, 30]);
+    }
+
+    // ── Terminals ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn for_each_runs_side_effect() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        Pipe::from_iter(vec![1, 2, 3])
+            .for_each(move |x| seen2.lock().unwrap().push(x))
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn first_returns_first_element() {
+        let result = Pipe::from_iter(vec![10, 20, 30]).first().await.unwrap();
+        assert_eq!(result, Some(10));
+    }
+
+    #[tokio::test]
+    async fn first_returns_none_for_empty() {
+        let result = Pipe::<i64>::empty().first().await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn last_returns_last_element() {
+        let result = Pipe::from_iter(vec![10, 20, 30]).last().await.unwrap();
+        assert_eq!(result, Some(30));
+    }
+
+    #[tokio::test]
+    async fn last_returns_none_for_empty() {
+        let result = Pipe::<i64>::empty().last().await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    // ── Chain / enumerate / inspect / merge_with ─────────
+
+    #[tokio::test]
+    async fn chain_sequential() {
+        let a = Pipe::from_iter(vec![1, 2]);
+        let b = Pipe::from_iter(vec![3, 4, 5]);
+        let result = a.chain(b).collect().await.unwrap();
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn chain_first_empty() {
+        let result = Pipe::<i64>::empty()
+            .chain(Pipe::from_iter(vec![1, 2]))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn chain_second_empty() {
+        let result = Pipe::from_iter(vec![1, 2])
+            .chain(Pipe::empty())
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn enumerate_pairs_with_index() {
+        let result = Pipe::from_iter(vec!["a", "b", "c"])
+            .enumerate()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![(0, "a"), (1, "b"), (2, "c")]);
+    }
+
+    #[tokio::test]
+    async fn inspect_observes() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .inspect(move |x| seen2.lock().unwrap().push(*x))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+        assert_eq!(*seen.lock().unwrap(), vec![1, 2, 3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn merge_with_two_pipes() {
+        let a = Pipe::from_iter(vec![1, 3, 5]);
+        let b = Pipe::from_iter(vec![2, 4, 6]);
+        let mut result = a.merge_with(b).collect().await.unwrap();
+        result.sort();
+        assert_eq!(result, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn from_pull_without_boxing() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct Trio;
+        impl PullOperator<i64> for Trio {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async { Ok(Some(vec![1, 2, 3])) })
+            }
+        }
+
+        // No Box::new needed
+        let result = Pipe::from_pull(Trio).take(3).collect().await.unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
     }
 }

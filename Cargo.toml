@@ -8,3 +8,4 @@ repository = "https://github.com/hamidr/pipe"
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "io-util"] }
+futures-core = "0.3"
