@@ -131,6 +131,26 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
+    /// Infinite stream repeating the same value.
+    pub fn repeat(item: B) -> Self
+    where
+        B: Clone + Sync,
+    {
+        Self::iterate(item, |x| x.clone())
+    }
+
+    /// Infinite stream from a factory function called for each element.
+    pub fn repeat_with(f: impl Fn() -> B + Send + Sync + 'static) -> Self {
+        let f: Arc<dyn Fn() -> B + Send + Sync> = Arc::new(f);
+        Self::from_factory(move || {
+            let f = Arc::clone(&f);
+            Box::new(PullRepeatWith {
+                f: Box::new(move || f()),
+                chunk_size: 256,
+            })
+        })
+    }
+
     /// Create a stream from a factory that produces a [`PullOperator`].
     ///
     /// The factory is called each time the pipe is materialized (i.e.,
@@ -1071,6 +1091,20 @@ impl<B: Send + 'static> Pipe<B> {
     }
 }
 
+impl Pipe<tokio::time::Instant> {
+    /// Infinite stream that emits the current instant at fixed intervals.
+    ///
+    /// The first element is emitted immediately.
+    pub fn interval(period: std::time::Duration) -> Self {
+        Self::from_factory(move || {
+            Box::new(PullInterval {
+                interval: tokio::time::interval(period),
+                chunk_size: 1,
+            })
+        })
+    }
+}
+
 /// Flatten a `Pipe<Vec<B>>` back to `Pipe<B>`.
 impl<B: Clone + Send + Sync + 'static> Pipe<Vec<B>> {
     /// Flatten chunked elements back to individual elements.
@@ -1160,6 +1194,41 @@ impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracke
                 },
                 _ => Ok(None),
             }
+        })
+    }
+}
+
+// ── RepeatWith (infinite from factory) ──────────────
+
+struct PullRepeatWith<B> {
+    f: Box<dyn Fn() -> B + Send>,
+    chunk_size: usize,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullRepeatWith<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            let chunk: Vec<B> = (0..self.chunk_size).map(|_| (self.f)()).collect();
+            Ok(Some(chunk))
+        })
+    }
+}
+
+// ── Interval (time-based ticks) ─────────────────────
+
+struct PullInterval {
+    interval: tokio::time::Interval,
+    chunk_size: usize,
+}
+
+impl PullOperator<tokio::time::Instant> for PullInterval {
+    fn next_chunk(&mut self) -> ChunkFut<'_, tokio::time::Instant> {
+        Box::pin(async move {
+            let mut chunk = Vec::with_capacity(self.chunk_size);
+            for _ in 0..self.chunk_size {
+                chunk.push(self.interval.tick().await);
+            }
+            Ok(Some(chunk))
         })
     }
 }
@@ -2661,5 +2730,39 @@ mod tests {
         let b = clone.collect().await.unwrap();
         assert_eq!(a, vec![1, 2]);
         assert_eq!(b, vec![1, 2]);
+    }
+
+    // ── repeat / repeat_with / interval ───────────────────
+
+    #[tokio::test]
+    async fn repeat_takes_n() {
+        let result = Pipe::repeat(42).take(5).collect().await.unwrap();
+        assert_eq!(result, vec![42, 42, 42, 42, 42]);
+    }
+
+    #[tokio::test]
+    async fn repeat_with_factory() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let counter = Arc::new(AtomicI64::new(0));
+        let c = counter.clone();
+        let result = Pipe::repeat_with(move || c.fetch_add(1, Ordering::SeqCst))
+            .take(4)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![0, 1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn interval_emits_ticks() {
+        let result = Pipe::interval(std::time::Duration::from_millis(1))
+            .take(3)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        // Ticks should be monotonically increasing
+        assert!(result[0] <= result[1]);
+        assert!(result[1] <= result[2]);
     }
 }
