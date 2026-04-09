@@ -49,6 +49,12 @@ pub trait PullOperator<B: Send + 'static>: Send {
     fn next_chunk(&mut self) -> ChunkFut<'_, B>;
 }
 
+impl<B: Send + 'static, T: PullOperator<B> + ?Sized> PullOperator<B> for Box<T> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        (**self).next_chunk()
+    }
+}
+
 // ── Source ─────────────────────────────────────────────
 
 pub(crate) struct PullSource<B> {

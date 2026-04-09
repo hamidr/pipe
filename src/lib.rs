@@ -41,6 +41,7 @@ pub mod io;
 pub mod operator;
 pub mod pipeline;
 pub mod pull;
+pub mod stream;
 
 pub mod prelude {
     //! Re-exports for convenience.
