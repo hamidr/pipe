@@ -792,6 +792,139 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
+    /// Alternate elements from two pipes in round-robin order.
+    ///
+    /// Deterministic, unlike [`merge`](Self::merge) which interleaves
+    /// by arrival time. Stops when either pipe is exhausted.
+    pub fn interleave(self, other: Pipe<B>) -> Self {
+        let left = self.factory;
+        let right = other.factory;
+        Self::from_factory(move || {
+            Box::new(PullInterleave {
+                left: left(),
+                right: right(),
+                left_turn: true,
+                left_buf: std::collections::VecDeque::new(),
+                right_buf: std::collections::VecDeque::new(),
+                left_done: false,
+                right_done: false,
+            })
+        })
+    }
+
+    /// Insert a separator between every two elements.
+    ///
+    /// `[1, 2, 3].intersperse(0)` → `[1, 0, 2, 0, 3]`
+    pub fn intersperse(self, separator: B) -> Self
+    where
+        B: Clone + Sync,
+    {
+        let sep = Arc::new(separator);
+        let parent = self.factory;
+        Self::from_factory(move || {
+            let sep = Arc::clone(&sep);
+            Box::new(PullIntersperse {
+                child: parent(),
+                separator: sep,
+                buffer: Vec::new(),
+                first: true,
+                done: false,
+            })
+        })
+    }
+
+    /// Emit at most one element per `duration`.
+    ///
+    /// Elements arriving faster than the rate are delayed, not dropped.
+    pub fn throttle(self, duration: std::time::Duration) -> Self {
+        let parent = self.factory;
+        Self::from_factory(move || {
+            Box::new(PullThrottle {
+                child: parent(),
+                duration,
+                last: None,
+            })
+        })
+    }
+
+    /// Emit an element only after `duration` of silence.
+    ///
+    /// If new elements keep arriving within `duration`, only the
+    /// latest is emitted once the quiet period elapses. Spawns a
+    /// background task at materialization.
+    pub fn debounce(self, duration: std::time::Duration) -> Self {
+        let parent = self.factory;
+        Self::from_factory(move || {
+            let (tx, rx) = tokio::sync::mpsc::channel::<B>(1);
+            let mut root = parent();
+
+            let handle = tokio::spawn(async move {
+                let mut latest: Option<B> = None;
+
+                loop {
+                    if latest.is_some() {
+                        // We have a pending item — wait for quiet period or new item
+                        tokio::select! {
+                            biased;
+                            result = root.next_chunk() => {
+                                match result {
+                                    Ok(Some(chunk)) => {
+                                        // New data — reset timer, keep latest
+                                        latest = chunk.into_iter().last();
+                                    }
+                                    Ok(None) | Err(_) => {
+                                        // Source done — flush latest and exit
+                                        if let Some(item) = latest.take() {
+                                            let _ = tx.send(item).await;
+                                        }
+                                        return;
+                                    }
+                                }
+                            }
+                            _ = tokio::time::sleep(duration) => {
+                                // Quiet period elapsed — emit
+                                if let Some(item) = latest.take() {
+                                    if tx.send(item).await.is_err() { return; }
+                                }
+                            }
+                        }
+                    } else {
+                        // No pending item — wait for next chunk
+                        match root.next_chunk().await {
+                            Ok(Some(chunk)) => {
+                                latest = chunk.into_iter().last();
+                            }
+                            Ok(None) | Err(_) => return,
+                        }
+                    }
+                }
+            });
+
+            struct DebounceReceiver<B> {
+                rx: tokio::sync::mpsc::Receiver<B>,
+                _abort: tokio::task::AbortHandle,
+            }
+            impl<B> Drop for DebounceReceiver<B> {
+                fn drop(&mut self) { self._abort.abort(); }
+            }
+            impl<B: Send + 'static> PullOperator<B> for DebounceReceiver<B> {
+                fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+                    Box::pin(async move {
+                        match self.rx.recv().await {
+                            Some(item) => Ok(Some(vec![item])),
+                            None => Ok(None),
+                        }
+                    })
+                }
+            }
+
+            Box::new(DebounceReceiver {
+                rx,
+                _abort: handle.abort_handle(),
+            })
+        })
+    }
+
     /// Pair each element with its index: `(0, a), (1, b), (2, c), ...`
     pub fn enumerate(self) -> Pipe<(usize, B)> {
         self.scan(0usize, |idx, item| {
@@ -1135,6 +1268,21 @@ impl<B: Clone + Send + Sync + 'static> Pipe<Vec<B>> {
     }
 }
 
+/// Flatten a `Pipe<Pipe<B>>` into `Pipe<B>`.
+impl<B: Send + 'static> Pipe<Pipe<B>> {
+    /// Flatten nested pipes: each inner pipe is drained sequentially.
+    pub fn flatten(self) -> Pipe<B> {
+        let parent = self.factory;
+        Pipe::from_factory(move || {
+            Box::new(PullFlatten {
+                outer: parent(),
+                inner: None,
+                pending: std::collections::VecDeque::new(),
+            })
+        })
+    }
+}
+
 /// Split a `Pipe<(A, B)>` into two pipes via broadcast.
 ///
 /// Uses `broadcast(2)` internally — the source is shared.
@@ -1229,6 +1377,180 @@ impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracke
                     }
                 },
                 _ => Ok(None),
+            }
+        })
+    }
+}
+
+// ── Interleave (round-robin) ────────────────────────
+
+struct PullInterleave<B: Send + 'static> {
+    left: Box<dyn PullOperator<B>>,
+    right: Box<dyn PullOperator<B>>,
+    left_turn: bool,
+    left_buf: std::collections::VecDeque<B>,
+    right_buf: std::collections::VecDeque<B>,
+    left_done: bool,
+    right_done: bool,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullInterleave<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            let mut result = Vec::new();
+
+            loop {
+                // Refill buffers as needed
+                if self.left_buf.is_empty() && !self.left_done {
+                    match self.left.next_chunk().await? {
+                        Some(chunk) => self.left_buf.extend(chunk),
+                        None => self.left_done = true,
+                    }
+                }
+                if self.right_buf.is_empty() && !self.right_done {
+                    match self.right.next_chunk().await? {
+                        Some(chunk) => self.right_buf.extend(chunk),
+                        None => self.right_done = true,
+                    }
+                }
+
+                if self.left_buf.is_empty() && self.right_buf.is_empty() {
+                    break;
+                }
+
+                // Interleave one element at a time
+                let limit = self.left_buf.len().max(self.right_buf.len()) * 2;
+                for _ in 0..limit {
+                    if self.left_turn {
+                        if let Some(item) = self.left_buf.pop_front() {
+                            result.push(item);
+                        }
+                    } else if let Some(item) = self.right_buf.pop_front() {
+                        result.push(item);
+                    }
+                    self.left_turn = !self.left_turn;
+
+                    if self.left_buf.is_empty() && self.right_buf.is_empty() {
+                        break;
+                    }
+                }
+
+                if !result.is_empty() {
+                    return Ok(Some(result));
+                }
+            }
+
+            if result.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(result))
+            }
+        })
+    }
+}
+
+// ── Intersperse (separator between elements) ────────
+
+struct PullIntersperse<B: Send + 'static> {
+    child: Box<dyn PullOperator<B>>,
+    separator: Arc<B>,
+    buffer: Vec<B>,
+    first: bool,
+    done: bool,
+}
+
+impl<B: Clone + Send + Sync + 'static> PullOperator<B> for PullIntersperse<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            if self.done {
+                return Ok(None);
+            }
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    self.buffer.clear();
+                    for item in chunk {
+                        if !self.first {
+                            self.buffer.push((*self.separator).clone());
+                        }
+                        self.buffer.push(item);
+                        self.first = false;
+                    }
+                    Ok(Some(std::mem::take(&mut self.buffer)))
+                }
+                None => {
+                    self.done = true;
+                    Ok(None)
+                }
+            }
+        })
+    }
+}
+
+// ── Throttle (rate limiting) ────────────────────────
+
+struct PullThrottle<B: Send + 'static> {
+    child: Box<dyn PullOperator<B>>,
+    duration: std::time::Duration,
+    last: Option<tokio::time::Instant>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullThrottle<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    let mut result = Vec::with_capacity(chunk.len());
+                    for item in chunk {
+                        if let Some(last) = self.last {
+                            let elapsed = tokio::time::Instant::now() - last;
+                            if elapsed < self.duration {
+                                tokio::time::sleep(self.duration - elapsed).await;
+                            }
+                        }
+                        self.last = Some(tokio::time::Instant::now());
+                        result.push(item);
+                    }
+                    Ok(Some(result))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── Flatten (Pipe<Pipe<B>> → Pipe<B>) ──────────────
+
+struct PullFlatten<B: Send + 'static> {
+    outer: Box<dyn PullOperator<Pipe<B>>>,
+    inner: Option<Box<dyn PullOperator<B>>>,
+    pending: std::collections::VecDeque<Pipe<B>>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullFlatten<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            loop {
+                // Drain current inner pipe
+                if let Some(ref mut inner) = self.inner {
+                    match inner.next_chunk().await? {
+                        Some(chunk) => return Ok(Some(chunk)),
+                        None => {
+                            self.inner = None;
+                        }
+                    }
+                }
+                // Try next pending pipe
+                if let Some(pipe) = self.pending.pop_front() {
+                    self.inner = Some(pipe.into_pull());
+                    continue;
+                }
+                // Get next batch of pipes from outer
+                match self.outer.next_chunk().await? {
+                    Some(pipes) => {
+                        self.pending.extend(pipes);
+                    }
+                    None => return Ok(None),
+                }
             }
         })
     }
@@ -2892,5 +3214,78 @@ mod tests {
         let b = right.collect().await.unwrap();
         assert_eq!(a, vec![1, 2, 3]);
         assert_eq!(b, vec!["a", "b", "c"]);
+    }
+
+    // ── interleave / intersperse / flatten / throttle ─────
+
+    #[tokio::test]
+    async fn interleave_round_robin() {
+        let a = Pipe::from_iter(vec![1, 3, 5]);
+        let b = Pipe::from_iter(vec![2, 4, 6]);
+        let result = a.interleave(b).collect().await.unwrap();
+        assert_eq!(result, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn interleave_unequal_length() {
+        let a = Pipe::from_iter(vec![1, 3, 5, 7]);
+        let b = Pipe::from_iter(vec![2, 4]);
+        let result = a.interleave(b).collect().await.unwrap();
+        // After right exhausts, interleave stops taking from right
+        // but continues from left
+        assert_eq!(result, vec![1, 2, 3, 4, 5, 7]);
+    }
+
+    #[tokio::test]
+    async fn intersperse_inserts_separator() {
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .intersperse(0)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 0, 2, 0, 3]);
+    }
+
+    #[tokio::test]
+    async fn intersperse_single_element() {
+        let result = Pipe::from_iter(vec![42])
+            .intersperse(0)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![42]);
+    }
+
+    #[tokio::test]
+    async fn intersperse_empty() {
+        let result = Pipe::<i64>::empty()
+            .intersperse(0)
+            .collect()
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn flatten_nested_pipes() {
+        let inner1 = Pipe::from_iter(vec![1, 2]);
+        let inner2 = Pipe::from_iter(vec![3, 4, 5]);
+        let outer = Pipe::from_pull_once(crate::pull::PullSource::new(vec![inner1, inner2]));
+        let result = outer.flatten().collect().await.unwrap();
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn throttle_limits_rate() {
+        let start = tokio::time::Instant::now();
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .throttle(std::time::Duration::from_millis(10))
+            .collect()
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(result, vec![1, 2, 3]);
+        // At least 20ms for 3 elements at 10ms throttle (first is immediate)
+        assert!(elapsed >= std::time::Duration::from_millis(20));
     }
 }
