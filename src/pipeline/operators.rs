@@ -134,6 +134,19 @@ impl<B: Send + 'static> Pipe<B> {
         self.tap(f)
     }
 
+    /// Stop producing elements when the token is cancelled.
+    ///
+    /// The pipe returns `None` on the next pull after cancellation,
+    /// allowing downstream to drain naturally instead of aborting.
+    pub fn with_cancel(self, token: crate::cancel::CancelToken) -> Self {
+        let parent = self.factory;
+        Self::from_factory(move || {
+            let child = parent();
+            let token = token.clone();
+            Box::new(crate::cancel::PullCancel { child, token })
+        })
+    }
+
     /// Take the first `n` elements.
     pub fn take(self, n: usize) -> Self {
         let parent = self.factory;
