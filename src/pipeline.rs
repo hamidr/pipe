@@ -1,0 +1,1393 @@
+//! Composable pipeline — a lazy effectful list of elements.
+//!
+//! `Pipe<B>` is analogous to `Stream[F, O]` in FS2.
+//! `B` is the **element type** — chunking is an internal detail.
+//! Operations like `map`, `and_then`, `flat_map` can change the
+//! element type.
+
+use std::future::Future;
+
+use crate::operator::Operator;
+use crate::pull::{
+    collect_all, fold_all, PipeError, PullAndThen, PullDrop, PullFilter, PullFlatMap, PullIterate,
+    PullMap, PullOperator, PullPipe, PullScan, PullSource, PullTake, PullTap, PullUnfold, PullZip,
+};
+
+/// A lazy effectful list of `B` elements.
+///
+/// ```ignore
+/// let result = Pipe::from_iter(1..=10)
+///     .map(|x| x * 2)
+///     .filter(|x| *x > 10)
+///     .take(3)
+///     .collect().await?;
+/// assert_eq!(result, vec![12, 14, 16]);
+/// ```
+pub struct Pipe<B: Send + 'static> {
+    root: Box<dyn PullOperator<B>>,
+}
+
+impl<B: Send + 'static> Pipe<B> {
+    /// Internal: wrap a pull operator with no background tasks.
+    fn wrap(root: Box<dyn PullOperator<B>>) -> Self {
+        Self { root }
+    }
+
+    // ══════════════════════════════════════════════════════
+    // Constructors
+    // ══════════════════════════════════════════════════════
+
+    /// Create a stream from an iterator of elements.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_iter(items: impl IntoIterator<Item = B>) -> Self {
+        Self::wrap(Box::new(PullSource::new(items.into_iter().collect())))
+    }
+
+    /// Create a stream of one element.
+    pub fn once(item: B) -> Self {
+        Self::wrap(Box::new(PullSource::new(vec![item])))
+    }
+
+    /// Create an empty stream.
+    pub fn empty() -> Self {
+        Self::wrap(Box::new(PullSource::<B>::empty()))
+    }
+
+    /// Lazy generation from a seed. Produces elements until `step` returns `None`.
+    pub fn unfold<S: Send + 'static>(
+        seed: S,
+        step: impl Fn(&mut S) -> Option<B> + Send + 'static,
+    ) -> Self {
+        Self::wrap(Box::new(PullUnfold::new(seed, step)))
+    }
+
+    /// Infinite stream: `init, f(init), f(f(init)), ...`
+    pub fn iterate(init: B, step: impl Fn(&B) -> B + Send + 'static) -> Self
+    where
+        B: Clone,
+    {
+        Self::wrap(Box::new(PullIterate::new(init, step)))
+    }
+
+    /// Create a stream from a custom [`PullOperator`] implementation.
+    pub fn from_pull(op: Box<dyn PullOperator<B>>) -> Self {
+        Self::wrap(op)
+    }
+
+    // ══════════════════════════════════════════════════════
+    // Type-changing operators
+    // ══════════════════════════════════════════════════════
+
+    /// Transform each element (may change type).
+    pub fn map<C: Send + 'static>(self, f: impl Fn(B) -> C + Send + 'static) -> Pipe<C> {
+        Pipe::wrap(Box::new(PullMap {
+            child: self.root,
+            f,
+        }))
+    }
+
+    /// Fused map + filter (may change type).
+    pub fn and_then<C: Send + 'static>(
+        self,
+        f: impl Fn(B) -> Option<C> + Send + 'static,
+    ) -> Pipe<C> {
+        Pipe::wrap(Box::new(PullAndThen {
+            child: self.root,
+            f,
+        }))
+    }
+
+    /// Each element expands into a sub-stream (may change type).
+    pub fn flat_map<C: Send + 'static>(self, f: impl Fn(B) -> Pipe<C> + Send + 'static) -> Pipe<C> {
+        Pipe::wrap(Box::new(PullFlatMap::new(self.root, f)))
+    }
+
+    /// Stateful per-element transform (may change type).
+    pub fn scan<C: Send + 'static, S: Send + 'static>(
+        self,
+        init: S,
+        f: impl Fn(&mut S, B) -> C + Send + 'static,
+    ) -> Pipe<C> {
+        Pipe::wrap(Box::new(PullScan {
+            child: self.root,
+            state: init,
+            f,
+        }))
+    }
+
+    /// Apply an async [`Operator`] to each element (may change type).
+    pub fn pipe<C: Send + 'static, T: Operator<B, C> + 'static>(self, op: T) -> Pipe<C> {
+        Pipe::wrap(Box::new(PullPipe {
+            operator: Box::new(op),
+            child: self.root,
+        }))
+    }
+
+    // ══════════════════════════════════════════════════════
+    // Async element operations (eval_*)
+    // ══════════════════════════════════════════════════════
+
+    /// Async per-element transform (like `map` but with `Future`).
+    pub fn eval_map<C: Send + 'static, Fut: Future<Output = Result<C, PipeError>> + Send + 'static>(
+        self,
+        f: impl Fn(B) -> Fut + Send + 'static,
+    ) -> Pipe<C> {
+        Pipe::wrap(Box::new(PullEvalMap {
+            child: self.root,
+            f,
+        }))
+    }
+
+    /// Async per-element filter.
+    pub fn eval_filter<Fut: Future<Output = Result<bool, PipeError>> + Send + 'static>(
+        self,
+        f: impl Fn(&B) -> Fut + Send + 'static,
+    ) -> Self {
+        Self::wrap(Box::new(PullEvalFilter {
+            child: self.root,
+            f,
+        }))
+    }
+
+    /// Async side-effect on each element, pass through unchanged.
+    ///
+    /// Requires `B: Sync` because elements are borrowed across await points.
+    pub fn eval_tap<Fut: Future<Output = Result<(), PipeError>> + Send + 'static>(
+        self,
+        f: impl Fn(&B) -> Fut + Send + 'static,
+    ) -> Self
+    where
+        B: Sync,
+    {
+        Self::wrap(Box::new(PullEvalTap {
+            child: self.root,
+            f,
+        }))
+    }
+
+    // ══════════════════════════════════════════════════════
+    // Same-type operators
+    // ══════════════════════════════════════════════════════
+
+    /// Keep elements matching the predicate.
+    pub fn filter(self, f: impl Fn(&B) -> bool + Send + 'static) -> Self {
+        Self::wrap(Box::new(PullFilter {
+            child: self.root,
+            f,
+        }))
+    }
+
+    /// Side-effect on each element, pass through unchanged.
+    pub fn tap(self, f: impl Fn(&B) + Send + 'static) -> Self {
+        Self::wrap(Box::new(PullTap {
+            child: self.root,
+            f,
+        }))
+    }
+
+    /// Take the first `n` elements.
+    pub fn take(self, n: usize) -> Self {
+        Self::wrap(Box::new(PullTake {
+            child: self.root,
+            remaining: n,
+        }))
+    }
+
+    /// Skip the first `n` elements.
+    pub fn skip(self, n: usize) -> Self {
+        Self::wrap(Box::new(PullDrop {
+            child: self.root,
+            remaining: n,
+        }))
+    }
+
+    /// Take elements while predicate holds, then stop.
+    pub fn take_while(self, f: impl Fn(&B) -> bool + Send + 'static) -> Self {
+        Self::wrap(Box::new(PullTakeWhile {
+            child: self.root,
+            f,
+            done: false,
+        }))
+    }
+
+    /// Skip elements while predicate holds, then pass through.
+    pub fn skip_while(self, f: impl Fn(&B) -> bool + Send + 'static) -> Self {
+        Self::wrap(Box::new(PullSkipWhile {
+            child: self.root,
+            f,
+            skipping: true,
+        }))
+    }
+
+    /// Group elements into fixed-size chunks, exposing batch boundaries.
+    pub fn chunks(self, size: usize) -> Pipe<Vec<B>> {
+        Pipe::wrap(Box::new(PullChunks {
+            child: self.root,
+            size,
+        }))
+    }
+
+    // ══════════════════════════════════════════════════════
+    // Stream composition
+    // ══════════════════════════════════════════════════════
+
+    /// Apply a stream-level transform (FS2 `through`).
+    ///
+    /// The function receives this pipe and returns a new pipe.
+    /// This is the primary composition mechanism for reusable transforms.
+    ///
+    /// ```ignore
+    /// fn deduplicate(pipe: Pipe<i64>) -> Pipe<i64> {
+    ///     pipe.scan(None, |prev, x| {
+    ///         if *prev == Some(x) { None } else { *prev = Some(x); Some(x) }
+    ///     }).and_then(|x| x)
+    /// }
+    /// let result = Pipe::from_iter(vec![1,1,2,2,3]).through(deduplicate).collect().await?;
+    /// ```
+    pub fn through<C: Send + 'static>(self, f: impl FnOnce(Pipe<B>) -> Pipe<C>) -> Pipe<C> {
+        f(self)
+    }
+
+    // ══════════════════════════════════════════════════════
+    // Error recovery
+    // ══════════════════════════════════════════════════════
+
+    /// On error, switch to a fallback stream produced by `f`.
+    pub fn handle_error_with(self, f: impl Fn(PipeError) -> Pipe<B> + Send + 'static) -> Self {
+        Self::wrap(Box::new(PullHandleError {
+            child: self.root,
+            handler: Box::new(f),
+            fallback: None,
+        }))
+    }
+
+    /// Retry the entire stream up to `n` times on error.
+    ///
+    /// On error, reconstructs the stream from scratch and retries.
+    /// Requires a factory function that produces the stream.
+    pub fn retry(factory: impl Fn() -> Pipe<B> + Send + 'static, max_retries: usize) -> Self {
+        Self::wrap(Box::new(PullRetry {
+            factory: Box::new(factory),
+            current: None,
+            remaining: max_retries + 1,
+        }))
+    }
+
+    // ══════════════════════════════════════════════════════
+    // Concurrency
+    // ══════════════════════════════════════════════════════
+
+    /// Buffer up to `n` chunks ahead of the consumer.
+    ///
+    /// Spawns the upstream on a background task. Backpressure: the task
+    /// awaits when the buffer is full. Task is cancelled when Pipe is dropped.
+    pub fn prefetch(self, n: usize) -> Self {
+        let (tx, rx) = crate::channel::bounded::<B>(n);
+        let mut root = self.root;
+        let handle = tokio::spawn(async move {
+            while let Ok(Some(chunk)) = root.next_chunk().await {
+                if tx.send(chunk).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Self::wrap(Box::new(rx.with_abort(handle.abort_handle())))
+    }
+
+    /// Merge multiple pipes into one, interleaving in arrival order.
+    ///
+    /// Each source runs concurrently. Backpressure via bounded buffers.
+    /// Background tasks are cancelled when the merged Pipe is dropped.
+    pub fn merge(pipes: Vec<Pipe<B>>) -> Self {
+        if pipes.is_empty() {
+            return Pipe::empty();
+        }
+        if pipes.len() == 1 {
+            return pipes.into_iter().next().unwrap();
+        }
+
+        let (merged_tx, merged_rx) = crate::channel::bounded::<B>(pipes.len());
+        let mut handles = Vec::with_capacity(pipes.len());
+
+        for pipe in pipes {
+            let tx = merged_tx.clone();
+            let mut root = pipe.root;
+            let h = tokio::spawn(async move {
+                while let Ok(Some(chunk)) = root.next_chunk().await {
+                    if tx.send(chunk).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            handles.push(h.abort_handle());
+        }
+        drop(merged_tx);
+
+        // Wrap receiver with abort guards for all source tasks
+        Self::wrap(Box::new(GuardedPull {
+            inner: Box::new(merged_rx),
+            _guards: handles,
+        }))
+    }
+
+    /// Fan-out: clone each element to `n` branches.
+    ///
+    /// Each branch has a bounded buffer. The source blocks if ANY branch
+    /// is full. Background task cancelled when ALL branches are dropped.
+    ///
+    /// Internally, chunks are shared via `Arc<[B]>` so the source performs
+    /// zero clones per fan-out. Each consumer clones elements on pull.
+    pub fn broadcast(self, n: usize, buffer_size: usize) -> Vec<Pipe<B>>
+    where
+        B: Clone + Sync,
+    {
+        if n == 0 {
+            return vec![];
+        }
+        if n == 1 {
+            return vec![self];
+        }
+
+        // Arc-based channels: source shares one Arc<Vec<B>> across all branches,
+        // eliminating the per-branch chunk clone at send time.
+        let mut senders = Vec::with_capacity(n);
+        let mut receivers: Vec<tokio::sync::mpsc::Receiver<std::sync::Arc<Vec<B>>>> =
+            Vec::with_capacity(n);
+        for _ in 0..n {
+            let (tx, rx) =
+                tokio::sync::mpsc::channel::<std::sync::Arc<Vec<B>>>(buffer_size.max(1));
+            senders.push(tx);
+            receivers.push(rx);
+        }
+
+        let mut root = self.root;
+        let handle = tokio::spawn(async move {
+            while let Ok(Some(chunk)) = root.next_chunk().await {
+                let shared: std::sync::Arc<Vec<B>> = std::sync::Arc::new(chunk);
+                for tx in &senders {
+                    if tx.send(std::sync::Arc::clone(&shared)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+
+        let abort = handle.abort_handle();
+        receivers
+            .into_iter()
+            .map(|rx| {
+                Pipe::wrap(Box::new(BroadcastReceiver {
+                    rx,
+                    abort: Some(abort.clone()),
+                }))
+            })
+            .collect()
+    }
+
+    /// Pair elements positionally with another pipe.
+    ///
+    /// Buffers leftover elements across chunk boundaries so no data is
+    /// lost when left and right chunks have different sizes.
+    pub fn zip<C: Send + 'static>(self, other: Pipe<C>) -> Pipe<(B, C)> {
+        Pipe::wrap(Box::new(PullZip::new(self.root, other.root)))
+    }
+
+    /// Hash-partition elements across N branches.
+    ///
+    /// Each element goes to exactly one branch: `key(&element) % n`.
+    /// No cloning — elements are moved. Each branch has a bounded buffer
+    /// of `buffer_size` chunks. Backpressure: source blocks if any branch
+    /// is full. Background task cancelled when all branches are dropped.
+    ///
+    /// ```ignore
+    /// let partitions = pipe.partition(4, 2, |x| *x as u64);
+    /// // partitions[0] gets elements where key % 4 == 0
+    /// // partitions[1] gets elements where key % 4 == 1
+    /// // etc.
+    /// ```
+    pub fn partition(
+        self,
+        n: usize,
+        buffer_size: usize,
+        key: impl Fn(&B) -> u64 + Send + 'static,
+    ) -> Vec<Pipe<B>> {
+        if n == 0 {
+            return vec![];
+        }
+        if n == 1 {
+            return vec![self];
+        }
+
+        let mut senders = Vec::with_capacity(n);
+        let mut receivers = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (tx, rx) = crate::channel::bounded::<B>(buffer_size);
+            senders.push(tx);
+            receivers.push(rx);
+        }
+
+        let mut root = self.root;
+        let handle = tokio::spawn(async move {
+            while let Ok(Some(chunk)) = root.next_chunk().await {
+                let mut buckets: Vec<Vec<B>> = (0..n).map(|_| Vec::new()).collect();
+                for item in chunk {
+                    let idx = key(&item) as usize % n;
+                    buckets[idx].push(item);
+                }
+                for (i, bucket) in buckets.into_iter().enumerate() {
+                    if !bucket.is_empty() && senders[i].send(bucket).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+
+        let abort = handle.abort_handle();
+        receivers
+            .into_iter()
+            .map(|rx| Pipe::wrap(Box::new(rx.with_abort(abort.clone()))))
+            .collect()
+    }
+
+    // ══════════════════════════════════════════════════════
+    // Internal
+    // ══════════════════════════════════════════════════════
+
+    pub(crate) fn into_pull(self) -> Box<dyn PullOperator<B>> {
+        self.root
+    }
+
+    // ══════════════════════════════════════════════════════
+    // Terminals
+    // ══════════════════════════════════════════════════════
+
+    /// Collect all elements into a `Vec`.
+    pub async fn collect(mut self) -> Result<Vec<B>, PipeError> {
+        collect_all(&mut *self.root).await
+    }
+
+    /// Reduce all elements to a single value.
+    pub async fn fold<C: Send + 'static>(
+        mut self,
+        init: C,
+        f: impl Fn(C, B) -> C + Send,
+    ) -> Result<C, PipeError> {
+        fold_all(&mut *self.root, init, f).await
+    }
+
+    /// Count elements.
+    pub async fn count(mut self) -> Result<usize, PipeError> {
+        let mut n = 0usize;
+        while let Some(chunk) = self.root.next_chunk().await? {
+            n += chunk.len();
+        }
+        Ok(n)
+    }
+}
+
+/// Flatten a `Pipe<Vec<B>>` back to `Pipe<B>`.
+impl<B: Send + 'static> Pipe<Vec<B>> {
+    /// Flatten chunked elements back to individual elements.
+    pub fn unchunks(self) -> Pipe<B> {
+        self.flat_map(Pipe::from_iter)
+    }
+}
+
+// ══════════════════════════════════════════════════════
+// Internal pull operators for new features
+// ══════════════════════════════════════════════════════
+
+use crate::pull::ChunkFut;
+
+// ── GuardedPull (cancellation on drop) ───────────────
+
+/// Wraps a PullOperator with abort handles that cancel background tasks on drop.
+struct GuardedPull<B: Send + 'static> {
+    inner: Box<dyn PullOperator<B>>,
+    _guards: Vec<tokio::task::AbortHandle>,
+}
+
+impl<B: Send + 'static> Drop for GuardedPull<B> {
+    fn drop(&mut self) {
+        for handle in &self._guards {
+            handle.abort();
+        }
+    }
+}
+
+impl<B: Send + 'static> PullOperator<B> for GuardedPull<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        self.inner.next_chunk()
+    }
+}
+
+// ── BroadcastReceiver (Arc-based fan-out consumer) ──
+
+/// Receives `Arc<Vec<B>>` chunks from broadcast and clones elements on pull.
+struct BroadcastReceiver<B> {
+    rx: tokio::sync::mpsc::Receiver<std::sync::Arc<Vec<B>>>,
+    abort: Option<tokio::task::AbortHandle>,
+}
+
+impl<B> Drop for BroadcastReceiver<B> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.abort.take() {
+            handle.abort();
+        }
+    }
+}
+
+impl<B: Clone + Send + Sync + 'static> PullOperator<B> for BroadcastReceiver<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.rx.recv().await {
+                Some(arc) => Ok(Some(arc.iter().cloned().collect())),
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── TakeWhile ────────────────────────────────────────
+
+struct PullTakeWhile<B, F> {
+    child: Box<dyn PullOperator<B>>,
+    f: F,
+    done: bool,
+}
+
+impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B>
+    for PullTakeWhile<B, F>
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            if self.done {
+                return Ok(None);
+            }
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    let mut taken = Vec::new();
+                    for item in chunk {
+                        if (self.f)(&item) {
+                            taken.push(item);
+                        } else {
+                            self.done = true;
+                            break;
+                        }
+                    }
+                    if taken.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(taken))
+                    }
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── SkipWhile ────────────────────────────────────────
+
+struct PullSkipWhile<B, F> {
+    child: Box<dyn PullOperator<B>>,
+    f: F,
+    skipping: bool,
+}
+
+impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B>
+    for PullSkipWhile<B, F>
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            loop {
+                match self.child.next_chunk().await? {
+                    Some(chunk) => {
+                        if !self.skipping {
+                            return Ok(Some(chunk));
+                        }
+                        let mut rest = Vec::new();
+                        for item in chunk {
+                            if self.skipping {
+                                if !(self.f)(&item) {
+                                    self.skipping = false;
+                                    rest.push(item);
+                                }
+                            } else {
+                                rest.push(item);
+                            }
+                        }
+                        if !rest.is_empty() {
+                            return Ok(Some(rest));
+                        }
+                    }
+                    None => return Ok(None),
+                }
+            }
+        })
+    }
+}
+
+// ── Chunks ───────────────────────────────────────────
+
+struct PullChunks<B> {
+    child: Box<dyn PullOperator<B>>,
+    size: usize,
+}
+
+impl<B: Send + 'static> PullOperator<Vec<B>> for PullChunks<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, Vec<B>> {
+        Box::pin(async move {
+            let mut buffer = Vec::with_capacity(self.size);
+            while buffer.len() < self.size {
+                match self.child.next_chunk().await? {
+                    Some(chunk) => buffer.extend(chunk),
+                    None => break,
+                }
+            }
+            if buffer.is_empty() {
+                return Ok(None);
+            }
+            let groups: Vec<Vec<B>> = {
+                let mut gs = Vec::new();
+                let mut iter = buffer.into_iter();
+                loop {
+                    let group: Vec<B> = iter.by_ref().take(self.size).collect();
+                    if group.is_empty() {
+                        break;
+                    }
+                    gs.push(group);
+                }
+                gs
+            };
+            Ok(Some(groups))
+        })
+    }
+}
+
+// ── EvalMap (async per-element transform) ────────────
+
+struct PullEvalMap<B, F> {
+    child: Box<dyn PullOperator<B>>,
+    f: F,
+}
+
+impl<A: Send + 'static, B: Send + 'static, Fut, F> PullOperator<B> for PullEvalMap<A, F>
+where
+    Fut: Future<Output = Result<B, PipeError>> + Send,
+    F: Fn(A) -> Fut + Send + 'static,
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    let mut result = Vec::with_capacity(chunk.len());
+                    for item in chunk {
+                        result.push((self.f)(item).await?);
+                    }
+                    Ok(Some(result))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── EvalFilter (async predicate) ─────────────────────
+
+struct PullEvalFilter<B, F> {
+    child: Box<dyn PullOperator<B>>,
+    f: F,
+}
+
+impl<B: Send + 'static, Fut, F> PullOperator<B> for PullEvalFilter<B, F>
+where
+    Fut: Future<Output = Result<bool, PipeError>> + Send,
+    F: Fn(&B) -> Fut + Send + 'static,
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            loop {
+                match self.child.next_chunk().await? {
+                    Some(chunk) => {
+                        let mut filtered = Vec::new();
+                        for item in chunk {
+                            if (self.f)(&item).await? {
+                                filtered.push(item);
+                            }
+                        }
+                        if !filtered.is_empty() {
+                            return Ok(Some(filtered));
+                        }
+                    }
+                    None => return Ok(None),
+                }
+            }
+        })
+    }
+}
+
+// ── EvalTap (async side-effect) ──────────────────────
+
+struct PullEvalTap<B, F> {
+    child: Box<dyn PullOperator<B>>,
+    f: F,
+}
+
+impl<B: Send + Sync + 'static, Fut, F> PullOperator<B> for PullEvalTap<B, F>
+where
+    Fut: Future<Output = Result<(), PipeError>> + Send,
+    F: Fn(&B) -> Fut + Send + 'static,
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.child.next_chunk().await? {
+                Some(chunk) => {
+                    for item in &chunk {
+                        (self.f)(item).await?;
+                    }
+                    Ok(Some(chunk))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+// ── HandleError ──────────────────────────────────────
+
+struct PullHandleError<B: Send + 'static> {
+    child: Box<dyn PullOperator<B>>,
+    handler: Box<dyn Fn(PipeError) -> Pipe<B> + Send>,
+    fallback: Option<Box<dyn PullOperator<B>>>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullHandleError<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            // If we're in fallback mode, drain the fallback pipe
+            if let Some(ref mut fb) = self.fallback {
+                return fb.next_chunk().await;
+            }
+            match self.child.next_chunk().await {
+                Ok(chunk) => Ok(chunk),
+                Err(e) => {
+                    // Switch to fallback stream
+                    let pipe = (self.handler)(e);
+                    self.fallback = Some(pipe.root);
+                    // Pull first chunk from fallback
+                    self.fallback.as_mut().unwrap().next_chunk().await
+                }
+            }
+        })
+    }
+}
+
+// ── Retry ────────────────────────────────────────────
+
+struct PullRetry<B: Send + 'static> {
+    factory: Box<dyn Fn() -> Pipe<B> + Send>,
+    current: Option<Box<dyn PullOperator<B>>>,
+    remaining: usize,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullRetry<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            loop {
+                if self.current.is_none() {
+                    if self.remaining == 0 {
+                        return Err("retry exhausted".into());
+                    }
+                    self.remaining -= 1;
+                    self.current = Some((self.factory)().root);
+                }
+                match self.current.as_mut().unwrap().next_chunk().await {
+                    Ok(chunk) => return Ok(chunk),
+                    Err(_e) if self.remaining > 0 => {
+                        self.current = None; // retry
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        })
+    }
+}
+
+// ══════════════════════════════════════════════════════
+// Tests
+// ══════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operator::PinFut;
+
+    // ── Same-type operations ──────────────────────────
+
+    #[tokio::test]
+    async fn from_iter_collect() {
+        let result = Pipe::from_iter(vec![1, 2, 3]).collect().await.unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn once_single_element() {
+        let result = Pipe::once(42).collect().await.unwrap();
+        assert_eq!(result, vec![42]);
+    }
+
+    #[tokio::test]
+    async fn empty_stream() {
+        let result = Pipe::<i64>::empty().collect().await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn filter_evens() {
+        let result = Pipe::from_iter(1..=6)
+            .filter(|x| x % 2 == 0)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![2, 4, 6]);
+    }
+
+    #[tokio::test]
+    async fn take_first_three() {
+        let result = Pipe::from_iter(1..=10).take(3).collect().await.unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn skip_first_two() {
+        let result = Pipe::from_iter(1..=5).skip(2).collect().await.unwrap();
+        assert_eq!(result, vec![3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn fold_sum() {
+        let sum = Pipe::from_iter(1..=5)
+            .fold(0i64, |acc, x| acc + x)
+            .await
+            .unwrap();
+        assert_eq!(sum, 15);
+    }
+
+    #[tokio::test]
+    async fn count_elements() {
+        let n = Pipe::from_iter(1..=7).count().await.unwrap();
+        assert_eq!(n, 7);
+    }
+
+    #[tokio::test]
+    async fn tap_observes() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .tap(move |x| seen2.lock().unwrap().push(*x))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+        assert_eq!(*seen.lock().unwrap(), vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn chain_map_filter_take() {
+        let result = Pipe::from_iter(1..=10)
+            .map(|x| x * 2)
+            .filter(|x| *x > 10)
+            .take(3)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![12, 14, 16]);
+    }
+
+    // ── Type-changing operations ──────────────────────
+
+    #[tokio::test]
+    async fn map_changes_type() {
+        let result: Vec<String> = Pipe::from_iter(vec![1, 2, 3])
+            .map(|x: i64| x.to_string())
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["1", "2", "3"]);
+    }
+
+    #[tokio::test]
+    async fn and_then_changes_type() {
+        let result: Vec<String> = Pipe::from_iter(1..=5)
+            .and_then(|x: i64| if x > 2 { Some(format!("v{x}")) } else { None })
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["v3", "v4", "v5"]);
+    }
+
+    #[tokio::test]
+    async fn flat_map_changes_type() {
+        let result: Vec<String> = Pipe::from_iter(vec![1, 2])
+            .flat_map(|x: i64| Pipe::from_iter(vec![format!("{x}a"), format!("{x}b")]))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["1a", "1b", "2a", "2b"]);
+    }
+
+    #[tokio::test]
+    async fn scan_changes_type() {
+        let result: Vec<String> = Pipe::from_iter(vec![1, 2, 3])
+            .scan(0i64, |acc, x: i64| {
+                *acc += x;
+                format!("sum={acc}")
+            })
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["sum=1", "sum=3", "sum=6"]);
+    }
+
+    #[derive(Debug)]
+    struct ToStringOp;
+
+    impl Operator<i64, String> for ToStringOp {
+        fn execute<'a>(&'a self, input: i64) -> PinFut<'a, String> {
+            Box::pin(async move { Ok(format!("n{input}")) })
+        }
+    }
+
+    #[tokio::test]
+    async fn pipe_changes_type() {
+        let result: Vec<String> = Pipe::from_iter(vec![1, 2, 3])
+            .pipe(ToStringOp)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["n1", "n2", "n3"]);
+    }
+
+    #[tokio::test]
+    async fn multi_hop_type_change() {
+        let result: Vec<usize> = Pipe::from_iter(1..=3)
+            .map(|x: i64| x.to_string())
+            .map(|s| s.len())
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 1, 1]);
+    }
+
+    #[tokio::test]
+    async fn type_change_then_filter() {
+        let result: Vec<String> = Pipe::from_iter(1..=10)
+            .map(|x: i64| format!("item-{x}"))
+            .filter(|s| s.ends_with('5'))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["item-5"]);
+    }
+
+    // ── Infinite streams ──────────────────────────────
+
+    #[tokio::test]
+    async fn iterate_naturals() {
+        let result = Pipe::iterate(0, |x| x + 1).take(5).collect().await.unwrap();
+        assert_eq!(result, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn unfold_fibonacci() {
+        let result = Pipe::unfold((0u64, 1u64), |s| {
+            let val = s.0;
+            let next = s.0.checked_add(s.1)?;
+            *s = (s.1, next);
+            Some(val)
+        })
+        .take(10)
+        .collect()
+        .await
+        .unwrap();
+        assert_eq!(result, vec![0, 1, 1, 2, 3, 5, 8, 13, 21, 34]);
+    }
+
+    #[tokio::test]
+    async fn iterate_with_type_change() {
+        let result: Vec<String> = Pipe::iterate(1, |x| x + 1)
+            .take(3)
+            .map(|x: i64| format!("#{x}"))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["#1", "#2", "#3"]);
+    }
+
+    // ── flat_map ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn flat_map_same_type() {
+        let result = Pipe::from_iter(1..=3)
+            .flat_map(|x| Pipe::from_iter(0..x))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![0, 0, 1, 0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn flat_map_infinite_sub() {
+        let result = Pipe::once(1)
+            .flat_map(|x| Pipe::iterate(x, |n| n + 1))
+            .take(5)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+    }
+
+    // ── Custom PullOperator ─────────────────────────────
+
+    #[tokio::test]
+    async fn from_pull_custom_source() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct Counter {
+            current: i64,
+            max: i64,
+            chunk_size: usize,
+        }
+
+        impl PullOperator<i64> for Counter {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async move {
+                    if self.current > self.max {
+                        return Ok(None);
+                    }
+                    let mut chunk = Vec::with_capacity(self.chunk_size);
+                    for _ in 0..self.chunk_size {
+                        if self.current > self.max {
+                            break;
+                        }
+                        chunk.push(self.current);
+                        self.current += 1;
+                    }
+                    Ok(Some(chunk))
+                })
+            }
+        }
+
+        let result = Pipe::from_pull(Box::new(Counter {
+            current: 1,
+            max: 5,
+            chunk_size: 2,
+        }))
+        .map(|x| x * 10)
+        .collect()
+        .await
+        .unwrap();
+        assert_eq!(result, vec![10, 20, 30, 40, 50]);
+    }
+
+    #[tokio::test]
+    async fn from_pull_with_filter_and_take() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct Naturals {
+            n: i64,
+        }
+
+        impl PullOperator<i64> for Naturals {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async move {
+                    let mut chunk = Vec::with_capacity(64);
+                    for _ in 0..64 {
+                        self.n += 1;
+                        chunk.push(self.n);
+                    }
+                    Ok(Some(chunk))
+                })
+            }
+        }
+
+        let result = Pipe::from_pull(Box::new(Naturals { n: 0 }))
+            .filter(|x| x % 3 == 0)
+            .take(4)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![3, 6, 9, 12]);
+    }
+
+    // ── Concurrency ─────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prefetch_buffers_ahead() {
+        let result = Pipe::from_iter(1..=5)
+            .prefetch(2)
+            .map(|x| x * 10)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![10, 20, 30, 40, 50]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn merge_interleaves() {
+        let a = Pipe::from_iter(vec![1, 3, 5]);
+        let b = Pipe::from_iter(vec![2, 4, 6]);
+        let mut result = Pipe::merge(vec![a, b]).collect().await.unwrap();
+        result.sort();
+        assert_eq!(result, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn merge_empty() {
+        let result = Pipe::<i64>::merge(vec![]).collect().await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn merge_single() {
+        let result = Pipe::merge(vec![Pipe::from_iter(vec![1, 2, 3])])
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn broadcast_fans_out() {
+        let branches = Pipe::from_iter(vec![1, 2, 3]).broadcast(2, 2);
+        assert_eq!(branches.len(), 2);
+
+        let mut results = Vec::new();
+        for branch in branches {
+            results.push(branch.collect().await.unwrap());
+        }
+        assert_eq!(results[0], vec![1, 2, 3]);
+        assert_eq!(results[1], vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn zip_pairs_positionally() {
+        let a = Pipe::from_iter(vec![1, 2, 3]);
+        let b = Pipe::from_iter(vec!["a", "b", "c"]);
+        let result = a.zip(b).collect().await.unwrap();
+        assert_eq!(result, vec![(1, "a"), (2, "b"), (3, "c")]);
+    }
+
+    #[tokio::test]
+    async fn zip_unequal_length() {
+        let a = Pipe::from_iter(vec![1, 2, 3, 4, 5]);
+        let b = Pipe::from_iter(vec!["x", "y"]);
+        let result = a.zip(b).collect().await.unwrap();
+        assert_eq!(result, vec![(1, "x"), (2, "y")]);
+    }
+
+    // ── Partition ─────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn partition_splits_by_key() {
+        let parts = Pipe::from_iter(0..10i64).partition(2, 2, |x| *x as u64);
+
+        assert_eq!(parts.len(), 2);
+        let mut even = parts.into_iter().next().unwrap().collect().await.unwrap();
+        // Partition 0 gets elements where key % 2 == 0
+        even.sort();
+        assert_eq!(even, vec![0, 2, 4, 6, 8]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn partition_all_elements_preserved() {
+        let parts = Pipe::from_iter(1..=12i64).partition(3, 2, |x| *x as u64);
+
+        let mut all = Vec::new();
+        for part in parts {
+            all.extend(part.collect().await.unwrap());
+        }
+        all.sort();
+        assert_eq!(all, (1..=12).collect::<Vec<_>>());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn partition_single_returns_self() {
+        let parts = Pipe::from_iter(vec![1, 2, 3]).partition(1, 2, |x| *x as u64);
+        assert_eq!(parts.len(), 1);
+        let result = parts.into_iter().next().unwrap().collect().await.unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn partition_then_merge_roundtrip() {
+        let parts = Pipe::from_iter(1..=20i64).partition(4, 2, |x| *x as u64);
+
+        let merged = Pipe::merge(parts);
+        let mut result = merged.collect().await.unwrap();
+        result.sort();
+        assert_eq!(result, (1..=20).collect::<Vec<_>>());
+    }
+
+    // ── New features ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn take_while_stops_at_predicate() {
+        let result = Pipe::from_iter(1..=10)
+            .take_while(|x| *x < 5)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn skip_while_starts_at_predicate() {
+        let result = Pipe::from_iter(1..=6)
+            .skip_while(|x| *x < 4)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn chunks_groups_elements() {
+        let result = Pipe::from_iter(1..=7).chunks(3).collect().await.unwrap();
+        assert_eq!(result, vec![vec![1, 2, 3], vec![4, 5, 6], vec![7]]);
+    }
+
+    #[tokio::test]
+    async fn unchunks_flattens() {
+        let result = Pipe::from_iter(vec![vec![1, 2], vec![3, 4, 5]])
+            .unchunks()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn through_composition() {
+        fn double_evens(pipe: Pipe<i64>) -> Pipe<i64> {
+            pipe.filter(|x| x % 2 == 0).map(|x| x * 2)
+        }
+        let result = Pipe::from_iter(1..=6)
+            .through(double_evens)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![4, 8, 12]);
+    }
+
+    #[tokio::test]
+    async fn eval_map_async_transform() {
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .eval_map(|x| async move { Ok(format!("async-{x}")) })
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["async-1", "async-2", "async-3"]);
+    }
+
+    #[tokio::test]
+    async fn eval_filter_async_predicate() {
+        let result = Pipe::from_iter(1..=6)
+            .eval_filter(|x| {
+                let x = *x;
+                async move { Ok(x % 2 == 0) }
+            })
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![2, 4, 6]);
+    }
+
+    #[tokio::test]
+    async fn eval_tap_async_side_effect() {
+        use std::sync::{Arc, Mutex};
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let log2 = log.clone();
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .eval_tap(move |x| {
+                let log = log2.clone();
+                let x = *x;
+                async move {
+                    log.lock().unwrap().push(x);
+                    Ok(())
+                }
+            })
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+        assert_eq!(*log.lock().unwrap(), vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn handle_error_with_recovers() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct FailAfter {
+            count: usize,
+            yielded: usize,
+        }
+        impl PullOperator<i64> for FailAfter {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async move {
+                    if self.yielded >= self.count {
+                        return Err("boom".into());
+                    }
+                    self.yielded += 1;
+                    Ok(Some(vec![self.yielded as i64]))
+                })
+            }
+        }
+
+        let result = Pipe::from_pull(Box::new(FailAfter {
+            count: 2,
+            yielded: 0,
+        }))
+        .handle_error_with(|_| Pipe::from_iter(vec![99]))
+        .collect()
+        .await
+        .unwrap();
+        assert_eq!(result, vec![1, 2, 99]);
+    }
+
+    #[tokio::test]
+    async fn retry_recovers_from_failure() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let attempt = Arc::new(AtomicUsize::new(0));
+
+        let attempt2 = attempt.clone();
+        let result = Pipe::retry(
+            move || {
+                let n = attempt2.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    // First two attempts fail after yielding some data
+                    Pipe::from_iter(vec![1, 2]).eval_map(move |x| async move {
+                        if x == 2 {
+                            Err("fail".into())
+                        } else {
+                            Ok(x)
+                        }
+                    })
+                } else {
+                    // Third attempt succeeds
+                    Pipe::from_iter(vec![10, 20, 30])
+                }
+            },
+            3,
+        )
+        .collect()
+        .await
+        .unwrap();
+        assert_eq!(result, vec![10, 20, 30]);
+    }
+}
