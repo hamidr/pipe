@@ -572,9 +572,8 @@ impl<B: Send + 'static> Pipe<B> {
     /// Each branch has a bounded buffer. The source blocks if ANY branch
     /// is full. Background task cancelled when ALL branches are dropped.
     ///
-    /// **Note:** broadcast eagerly materializes the source. The returned
-    /// pipes are single-use — cloning a branch and materializing both
-    /// clones will panic.
+    /// Materialization is lazy — the source is not started until the
+    /// first branch is consumed.
     pub fn broadcast(self, n: usize, buffer_size: usize) -> Vec<Pipe<B>>
     where
         B: Clone + Sync,
@@ -586,42 +585,18 @@ impl<B: Send + 'static> Pipe<B> {
             return vec![self];
         }
 
-        let mut senders = Vec::with_capacity(n);
-        let mut receivers: Vec<tokio::sync::mpsc::Receiver<Arc<Vec<B>>>> =
-            Vec::with_capacity(n);
-        for _ in 0..n {
-            let (tx, rx) = tokio::sync::mpsc::channel::<Arc<Vec<B>>>(buffer_size.max(1));
-            senders.push(tx);
-            receivers.push(rx);
-        }
+        // Shared state: initialized once when any branch first materializes.
+        // Each branch gets a pre-assigned index and takes its receiver.
+        let shared = Arc::new(LazyFanOut::new(n, buffer_size, self.factory));
 
-        let mut root = (self.factory)();
-        let handle = tokio::spawn(async move {
-            while let Ok(Some(chunk)) = root.next_chunk().await {
-                let shared: Arc<Vec<B>> = Arc::new(chunk);
-                for tx in &senders {
-                    if tx.send(Arc::clone(&shared)).await.is_err() {
-                        return;
-                    }
-                }
-            }
-        });
-
-        let abort = handle.abort_handle();
-        receivers
-            .into_iter()
-            .map(|rx| {
-                let slot = Arc::new(std::sync::Mutex::new(Some(rx)));
-                let abort = abort.clone();
+        (0..n)
+            .map(|idx| {
+                let shared = Arc::clone(&shared);
                 Pipe::from_factory(move || {
-                    let rx = slot
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .expect("broadcast branch already consumed");
+                    let rx = shared.take_broadcast_receiver(idx);
                     Box::new(BroadcastReceiver {
                         rx,
-                        abort: Some(abort.clone()),
+                        abort: Some(shared.abort_handle()),
                     })
                 })
             })
@@ -645,9 +620,8 @@ impl<B: Send + 'static> Pipe<B> {
     /// of `buffer_size` chunks. Backpressure: source blocks if any branch
     /// is full. Background task cancelled when all branches are dropped.
     ///
-    /// **Note:** partition eagerly materializes the source. The returned
-    /// pipes are single-use — cloning a branch and materializing both
-    /// clones will panic.
+    /// Materialization is lazy — the source is not started until the
+    /// first branch is consumed.
     ///
     /// ```ignore
     /// let partitions = pipe.partition(4, 2, |x| *x as u64);
@@ -668,45 +642,13 @@ impl<B: Send + 'static> Pipe<B> {
             return vec![self];
         }
 
-        let mut senders = Vec::with_capacity(n);
-        let mut receivers = Vec::with_capacity(n);
-        for _ in 0..n {
-            let (tx, rx) = crate::channel::bounded::<B>(buffer_size);
-            senders.push(tx);
-            receivers.push(rx);
-        }
+        let shared = Arc::new(LazyPartition::new(n, buffer_size, self.factory, key));
 
-        let mut root = (self.factory)();
-        let handle = tokio::spawn(async move {
-            let mut buckets: Vec<Vec<B>> = (0..n).map(|_| Vec::new()).collect();
-            while let Ok(Some(chunk)) = root.next_chunk().await {
-                for item in chunk {
-                    let idx = key(&item) as usize % n;
-                    buckets[idx].push(item);
-                }
-                for (i, bucket) in buckets.iter_mut().enumerate() {
-                    if !bucket.is_empty() {
-                        let batch = std::mem::take(bucket);
-                        if senders[i].send(batch).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-
-        let abort = handle.abort_handle();
-        receivers
-            .into_iter()
-            .map(|rx| {
-                let slot: Arc<std::sync::Mutex<Option<crate::channel::Receiver<B>>>> =
-                    Arc::new(std::sync::Mutex::new(Some(rx.with_abort(abort.clone()))));
+        (0..n)
+            .map(|idx| {
+                let shared = Arc::clone(&shared);
                 Pipe::from_factory(move || {
-                    let rx = slot
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .expect("partition branch already consumed");
+                    let rx = shared.take_receiver(idx);
                     Box::new(rx)
                 })
             })
@@ -906,6 +848,162 @@ impl<B: Send + 'static> PullOperator<B> for PullChain<B> {
             }
             Ok(None)
         })
+    }
+}
+
+// ── LazyFanOut (deferred broadcast setup) ───────────
+
+/// Shared state for lazy broadcast. Initialized on first branch access.
+struct LazyFanOut<B: Send + 'static> {
+    n: usize,
+    buffer_size: usize,
+    source_factory: Arc<dyn Fn() -> Box<dyn PullOperator<B>> + Send + Sync>,
+    state: std::sync::OnceLock<LazyFanOutState<B>>,
+}
+
+struct LazyFanOutState<B> {
+    receivers: std::sync::Mutex<Vec<Option<tokio::sync::mpsc::Receiver<Arc<Vec<B>>>>>>,
+    abort: tokio::task::AbortHandle,
+}
+
+impl<B: Clone + Send + Sync + 'static> LazyFanOut<B> {
+    fn new(
+        n: usize,
+        buffer_size: usize,
+        source_factory: Arc<dyn Fn() -> Box<dyn PullOperator<B>> + Send + Sync>,
+    ) -> Self {
+        Self {
+            n,
+            buffer_size,
+            source_factory,
+            state: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn ensure_init(&self) -> &LazyFanOutState<B> {
+        self.state.get_or_init(|| {
+            let mut senders = Vec::with_capacity(self.n);
+            let mut receivers = Vec::with_capacity(self.n);
+            for _ in 0..self.n {
+                let (tx, rx) =
+                    tokio::sync::mpsc::channel::<Arc<Vec<B>>>(self.buffer_size.max(1));
+                senders.push(tx);
+                receivers.push(Some(rx));
+            }
+
+            let mut root = (self.source_factory)();
+            let handle = tokio::spawn(async move {
+                while let Ok(Some(chunk)) = root.next_chunk().await {
+                    let shared: Arc<Vec<B>> = Arc::new(chunk);
+                    for tx in &senders {
+                        if tx.send(Arc::clone(&shared)).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+
+            LazyFanOutState {
+                receivers: std::sync::Mutex::new(receivers),
+                abort: handle.abort_handle(),
+            }
+        })
+    }
+
+    fn take_broadcast_receiver(
+        &self,
+        idx: usize,
+    ) -> tokio::sync::mpsc::Receiver<Arc<Vec<B>>> {
+        let state = self.ensure_init();
+        state.receivers.lock().unwrap()[idx]
+            .take()
+            .expect("broadcast branch already consumed")
+    }
+
+    fn abort_handle(&self) -> tokio::task::AbortHandle {
+        self.ensure_init().abort.clone()
+    }
+}
+
+// ── LazyPartition (deferred partition setup) ────────
+
+/// Shared state for lazy partition. Initialized on first branch access.
+struct LazyPartition<B: Send + 'static> {
+    n: usize,
+    buffer_size: usize,
+    source_factory: Arc<dyn Fn() -> Box<dyn PullOperator<B>> + Send + Sync>,
+    key: Arc<dyn Fn(&B) -> u64 + Send + Sync>,
+    state: std::sync::OnceLock<LazyPartitionState<B>>,
+}
+
+struct LazyPartitionState<B> {
+    receivers: std::sync::Mutex<Vec<Option<crate::channel::Receiver<B>>>>,
+}
+
+impl<B: Send + 'static> LazyPartition<B> {
+    fn new(
+        n: usize,
+        buffer_size: usize,
+        source_factory: Arc<dyn Fn() -> Box<dyn PullOperator<B>> + Send + Sync>,
+        key: impl Fn(&B) -> u64 + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            n,
+            buffer_size,
+            source_factory,
+            key: Arc::new(key),
+            state: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn ensure_init(&self) -> &LazyPartitionState<B> {
+        self.state.get_or_init(|| {
+            let n = self.n;
+            let mut senders = Vec::with_capacity(n);
+            let mut receivers = Vec::with_capacity(n);
+            for _ in 0..n {
+                let (tx, rx) = crate::channel::bounded::<B>(self.buffer_size);
+                senders.push(tx);
+                receivers.push(rx);
+            }
+
+            let mut root = (self.source_factory)();
+            let key = Arc::clone(&self.key);
+            let handle = tokio::spawn(async move {
+                let mut buckets: Vec<Vec<B>> = (0..n).map(|_| Vec::new()).collect();
+                while let Ok(Some(chunk)) = root.next_chunk().await {
+                    for item in chunk {
+                        let idx = key(&item) as usize % n;
+                        buckets[idx].push(item);
+                    }
+                    for (i, bucket) in buckets.iter_mut().enumerate() {
+                        if !bucket.is_empty() {
+                            let batch = std::mem::take(bucket);
+                            if senders[i].send(batch).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+
+            let abort = handle.abort_handle();
+            let receivers: Vec<_> = receivers
+                .into_iter()
+                .map(|rx| Some(rx.with_abort(abort.clone())))
+                .collect();
+
+            LazyPartitionState {
+                receivers: std::sync::Mutex::new(receivers),
+            }
+        })
+    }
+
+    fn take_receiver(&self, idx: usize) -> crate::channel::Receiver<B> {
+        let state = self.ensure_init();
+        state.receivers.lock().unwrap()[idx]
+            .take()
+            .expect("partition branch already consumed")
     }
 }
 
