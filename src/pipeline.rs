@@ -273,6 +273,195 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
+    /// Bounded-parallel async transform with ordered output.
+    ///
+    /// Processes up to `concurrency` elements concurrently. Results are
+    /// emitted in the same order as the input. Uses a background task
+    /// pool connected by channels.
+    pub fn par_eval_map<C: Send + 'static, Fut: Future<Output = Result<C, PipeError>> + Send + 'static>(
+        self,
+        concurrency: usize,
+        f: impl Fn(B) -> Fut + Send + Sync + 'static,
+    ) -> Pipe<C> {
+        let parent = self.factory;
+        let f = Arc::new(f);
+        let concurrency = concurrency.max(1);
+        Pipe::from_factory(move || {
+            let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Result<C, PipeError>>(concurrency);
+            let mut root = parent();
+            let f = Arc::clone(&f);
+
+            let handle = tokio::spawn(async move {
+                let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+                // Process each element: acquire permit, spawn work, send result in order
+                // Use a channel per element to preserve ordering
+                let mut pending: std::collections::VecDeque<
+                    tokio::sync::oneshot::Receiver<Result<C, PipeError>>,
+                > = std::collections::VecDeque::new();
+
+                let mut source_done = false;
+
+                loop {
+                    // Fill up to concurrency pending tasks
+                    while !source_done && pending.len() < concurrency {
+                        match root.next_chunk().await {
+                            Ok(Some(chunk)) => {
+                                for item in chunk {
+                                    let (tx, rx) = tokio::sync::oneshot::channel();
+                                    let f = Arc::clone(&f);
+                                    let sem = Arc::clone(&semaphore);
+                                    tokio::spawn(async move {
+                                        let _permit = sem.acquire().await;
+                                        let result = f(item).await;
+                                        let _ = tx.send(result);
+                                    });
+                                    pending.push_back(rx);
+                                }
+                            }
+                            Ok(None) => {
+                                source_done = true;
+                            }
+                            Err(e) => {
+                                let _ = out_tx.send(Err(e)).await;
+                                return;
+                            }
+                        }
+                    }
+
+                    if pending.is_empty() {
+                        return; // All done
+                    }
+
+                    // Drain completed results in order
+                    while let Some(front) = pending.front_mut() {
+                        match front.await {
+                            Ok(result) => {
+                                pending.pop_front();
+                                if out_tx.send(result).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Err(_) => {
+                                // Worker dropped — shouldn't happen
+                                pending.pop_front();
+                                let _ = out_tx
+                                    .send(Err(PipeError::Custom("worker dropped".into())))
+                                    .await;
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+
+            struct ParEvalMapReceiver<C> {
+                rx: tokio::sync::mpsc::Receiver<Result<C, PipeError>>,
+                _abort: tokio::task::AbortHandle,
+            }
+            impl<C> Drop for ParEvalMapReceiver<C> {
+                fn drop(&mut self) {
+                    self._abort.abort();
+                }
+            }
+            impl<C: Send + 'static> PullOperator<C> for ParEvalMapReceiver<C> {
+                fn next_chunk(&mut self) -> ChunkFut<'_, C> {
+                    Box::pin(async move {
+                        match self.rx.recv().await {
+                            Some(Ok(item)) => Ok(Some(vec![item])),
+                            Some(Err(e)) => Err(e),
+                            None => Ok(None),
+                        }
+                    })
+                }
+            }
+
+            Box::new(ParEvalMapReceiver {
+                rx: out_rx,
+                _abort: handle.abort_handle(),
+            })
+        })
+    }
+
+    /// Bounded-parallel async transform with unordered output.
+    ///
+    /// Like [`par_eval_map`](Self::par_eval_map) but results are
+    /// emitted as soon as they complete, not in input order.
+    /// Higher throughput when processing times vary.
+    pub fn par_eval_map_unordered<
+        C: Send + 'static,
+        Fut: Future<Output = Result<C, PipeError>> + Send + 'static,
+    >(
+        self,
+        concurrency: usize,
+        f: impl Fn(B) -> Fut + Send + Sync + 'static,
+    ) -> Pipe<C> {
+        let parent = self.factory;
+        let f = Arc::new(f);
+        let concurrency = concurrency.max(1);
+        Pipe::from_factory(move || {
+            let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Result<C, PipeError>>(concurrency);
+            let mut root = parent();
+            let f = Arc::clone(&f);
+
+            let handle = tokio::spawn(async move {
+                let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+
+                loop {
+                    match root.next_chunk().await {
+                        Ok(Some(chunk)) => {
+                            for item in chunk {
+                                let f = Arc::clone(&f);
+                                let sem = Arc::clone(&semaphore);
+                                let tx = out_tx.clone();
+                                // Acquire permit before spawning to enforce concurrency limit
+                                let permit = match sem.acquire_owned().await {
+                                    Ok(p) => p,
+                                    Err(_) => return,
+                                };
+                                tokio::spawn(async move {
+                                    let result = f(item).await;
+                                    let _ = tx.send(result).await;
+                                    drop(permit);
+                                });
+                            }
+                        }
+                        Ok(None) => return,
+                        Err(e) => {
+                            let _ = out_tx.send(Err(e)).await;
+                            return;
+                        }
+                    }
+                }
+            });
+
+            struct ParUnorderedReceiver<C> {
+                rx: tokio::sync::mpsc::Receiver<Result<C, PipeError>>,
+                _abort: tokio::task::AbortHandle,
+            }
+            impl<C> Drop for ParUnorderedReceiver<C> {
+                fn drop(&mut self) {
+                    self._abort.abort();
+                }
+            }
+            impl<C: Send + 'static> PullOperator<C> for ParUnorderedReceiver<C> {
+                fn next_chunk(&mut self) -> ChunkFut<'_, C> {
+                    Box::pin(async move {
+                        match self.rx.recv().await {
+                            Some(Ok(item)) => Ok(Some(vec![item])),
+                            Some(Err(e)) => Err(e),
+                            None => Ok(None),
+                        }
+                    })
+                }
+            }
+
+            Box::new(ParUnorderedReceiver {
+                rx: out_rx,
+                _abort: handle.abort_handle(),
+            })
+        })
+    }
+
     // ══════════════════════════════════════════════════════
     // Same-type operators
     // ══════════════════════════════════════════════════════
@@ -2313,6 +2502,44 @@ mod tests {
 
         let result = Pipe::from_pull_once(Hang)
             .timeout(std::time::Duration::from_millis(10))
+            .collect()
+            .await;
+        assert!(result.is_err());
+    }
+
+    // ── par_eval_map ──────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn par_eval_map_ordered() {
+        let result = Pipe::from_iter(1..=5)
+            .par_eval_map(3, |x| async move { Ok(x * 10) })
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![10, 20, 30, 40, 50]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn par_eval_map_unordered_preserves_all() {
+        let mut result = Pipe::from_iter(1..=10)
+            .par_eval_map_unordered(4, |x| async move { Ok(x * 2) })
+            .collect()
+            .await
+            .unwrap();
+        result.sort();
+        assert_eq!(result, vec![2, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn par_eval_map_propagates_error() {
+        let result = Pipe::from_iter(1..=5)
+            .par_eval_map(2, |x| async move {
+                if x == 3 {
+                    Err("boom".into())
+                } else {
+                    Ok(x)
+                }
+            })
             .collect()
             .await;
         assert!(result.is_err());
