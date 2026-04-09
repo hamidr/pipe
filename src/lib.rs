@@ -42,6 +42,7 @@ pub mod operator;
 pub mod pipeline;
 pub mod pull;
 pub mod stream;
+pub mod transform;
 
 pub mod prelude {
     //! Re-exports for convenience.
@@ -49,4 +50,5 @@ pub mod prelude {
     pub use crate::operator::{Operator, PinFut};
     pub use crate::pipeline::Pipe;
     pub use crate::pull::{ChunkFut, PipeError, PullOperator};
+    pub use crate::transform::Transform;
 }
