@@ -25,10 +25,6 @@ use crate::pull::{ChunkFut, PipeError, PullOperator};
 
 const DEFAULT_BUF_SIZE: usize = 8192;
 
-// ══════════════════════════════════════════════════════
-// Source: AsyncRead → Pipe<Vec<u8>>
-// ══════════════════════════════════════════════════════
-
 pub(crate) struct PullReader<R> {
     reader: R,
     buf: Vec<u8>,
@@ -57,10 +53,6 @@ impl<R: AsyncRead + Unpin + Send + 'static> PullOperator<Vec<u8>> for PullReader
     }
 }
 
-// ══════════════════════════════════════════════════════
-// Sink: Pipe<B> → AsyncWrite
-// ══════════════════════════════════════════════════════
-
 pub(crate) async fn drain_to_writer<B, W>(
     root: &mut dyn PullOperator<B>,
     mut writer: W,
@@ -80,10 +72,6 @@ where
     writer.flush().await?;
     Ok(total)
 }
-
-// ══════════════════════════════════════════════════════
-// Lines: Pipe<Vec<u8>> → Pipe<String>
-// ══════════════════════════════════════════════════════
 
 pub(crate) struct PullLines {
     pub(crate) child: Box<dyn PullOperator<Vec<u8>>>,
@@ -155,10 +143,6 @@ impl PullOperator<String> for PullLines {
         })
     }
 }
-
-// ══════════════════════════════════════════════════════
-// Pipe API extensions
-// ══════════════════════════════════════════════════════
 
 use crate::pipeline::Pipe;
 

@@ -8,10 +8,6 @@ use super::pull_ops::{BroadcastReceiver, GuardedPull, LazyFanOut, LazyPartition}
 use super::Pipe;
 
 impl<B: Send + 'static> Pipe<B> {
-    // ══════════════════════════════════════════════════════
-    // Concurrency
-    // ══════════════════════════════════════════════════════
-
     /// Buffer up to `n` chunks ahead of the consumer.
     ///
     /// Spawns the upstream on a background task at materialization time.

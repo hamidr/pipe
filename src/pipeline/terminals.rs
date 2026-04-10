@@ -9,18 +9,10 @@ use super::pull_ops::PullFlatten;
 use super::Pipe;
 
 impl<B: Send + 'static> Pipe<B> {
-    // ══════════════════════════════════════════════════════
-    // Internal
-    // ══════════════════════════════════════════════════════
-
     /// Materialize the pipeline into a pull operator chain.
     pub(crate) fn into_pull(self) -> Box<dyn PullOperator<B>> {
         (self.factory)()
     }
-
-    // ══════════════════════════════════════════════════════
-    // Terminals
-    // ══════════════════════════════════════════════════════
 
     /// Collect all elements into a `Vec`.
     pub async fn collect(self) -> Result<Vec<B>, PipeError> {

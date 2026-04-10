@@ -62,8 +62,6 @@ impl<A: Send + 'static> Transform<A, A> {
     }
 }
 
-// ── Pipe integration ──────────────────────────────────
-
 impl<B: Send + 'static> Pipe<B> {
     /// Apply a [`Transform`] to this pipe.
     ///

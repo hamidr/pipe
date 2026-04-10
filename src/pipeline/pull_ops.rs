@@ -8,8 +8,6 @@ use crate::pull::{ChunkFut, PipeError, PullOperator, YIELD_AFTER_EMPTY};
 
 use super::Pipe;
 
-// ── Bracket (resource safety) ───────────────────────
-
 pub(super) enum BracketState<B: Send + 'static, R: Send + 'static> {
     Pending {
         acquire: Arc<
@@ -84,8 +82,6 @@ impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracke
     }
 }
 
-// ── Interleave (round-robin) ────────────────────────
-
 pub(super) struct PullInterleave<B: Send + 'static> {
     pub(super) left: Box<dyn PullOperator<B>>,
     pub(super) right: Box<dyn PullOperator<B>>,
@@ -151,8 +147,6 @@ impl<B: Send + 'static> PullOperator<B> for PullInterleave<B> {
     }
 }
 
-// ── Intersperse (separator between elements) ────────
-
 pub(super) struct PullIntersperse<B: Send + 'static> {
     pub(super) child: Box<dyn PullOperator<B>>,
     pub(super) separator: Arc<B>,
@@ -188,8 +182,6 @@ impl<B: Clone + Send + Sync + 'static> PullOperator<B> for PullIntersperse<B> {
     }
 }
 
-// ── Throttle (rate limiting) ────────────────────────
-
 pub(super) struct PullThrottle<B: Send + 'static> {
     pub(super) child: Box<dyn PullOperator<B>>,
     pub(super) duration: std::time::Duration,
@@ -219,8 +211,6 @@ impl<B: Send + 'static> PullOperator<B> for PullThrottle<B> {
         })
     }
 }
-
-// ── Flatten (Pipe<Pipe<B>> → Pipe<B>) ──────────────
 
 pub(super) struct PullFlatten<B: Send + 'static> {
     pub(super) outer: Box<dyn PullOperator<Pipe<B>>>,
@@ -257,8 +247,6 @@ impl<B: Send + 'static> PullOperator<B> for PullFlatten<B> {
         })
     }
 }
-
-// ── SlidingWindow ───────────────────────────────────
 
 pub(super) struct PullSlidingWindow<B: Send + 'static> {
     pub(super) child: Box<dyn PullOperator<B>>,
@@ -302,8 +290,6 @@ impl<B: Clone + Send + 'static> PullOperator<Vec<B>> for PullSlidingWindow<B> {
     }
 }
 
-// ── RepeatWith (infinite from factory) ──────────────
-
 pub(super) struct PullRepeatWith<B> {
     pub(super) f: Box<dyn Fn() -> B + Send>,
     pub(super) chunk_size: usize,
@@ -317,8 +303,6 @@ impl<B: Send + 'static> PullOperator<B> for PullRepeatWith<B> {
         })
     }
 }
-
-// ── Interval (time-based ticks) ─────────────────────
 
 pub(super) struct PullInterval {
     pub(super) interval: tokio::time::Interval,
@@ -337,8 +321,6 @@ impl PullOperator<tokio::time::Instant> for PullInterval {
     }
 }
 
-// ── Timeout ─────────────────────────────────────────
-
 pub(super) struct PullTimeout<B: Send + 'static> {
     pub(super) child: Box<dyn PullOperator<B>>,
     pub(super) duration: std::time::Duration,
@@ -354,8 +336,6 @@ impl<B: Send + 'static> PullOperator<B> for PullTimeout<B> {
         })
     }
 }
-
-// ── Chain (sequential composition) ──────────────────
 
 pub(super) struct PullChain<B: Send + 'static> {
     pub(super) first: Option<Box<dyn PullOperator<B>>>,
@@ -385,8 +365,6 @@ impl<B: Send + 'static> PullOperator<B> for PullChain<B> {
         })
     }
 }
-
-// ── LazyFanOut (deferred broadcast setup) ───────────
 
 /// Shared state for lazy broadcast. Initialized on first branch access.
 pub(super) struct LazyFanOut<B: Send + 'static> {
@@ -459,8 +437,6 @@ impl<B: Clone + Send + Sync + 'static> LazyFanOut<B> {
         self.ensure_init().abort.clone()
     }
 }
-
-// ── LazyPartition (deferred partition setup) ────────
 
 /// Shared state for lazy partition. Initialized on first branch access.
 pub(super) struct LazyPartition<B: Send + 'static> {
@@ -542,8 +518,6 @@ impl<B: Send + 'static> LazyPartition<B> {
     }
 }
 
-// ── GuardedPull (cancellation on drop) ───────────────
-
 /// Wraps a PullOperator with abort handles that cancel background tasks on drop.
 pub(super) struct GuardedPull<B: Send + 'static> {
     pub(super) inner: Box<dyn PullOperator<B>>,
@@ -563,8 +537,6 @@ impl<B: Send + 'static> PullOperator<B> for GuardedPull<B> {
         self.inner.next_chunk()
     }
 }
-
-// ── BroadcastReceiver (Arc-based fan-out consumer) ──
 
 /// Receives `Arc<Vec<B>>` chunks from broadcast and clones elements on pull.
 pub(super) struct BroadcastReceiver<B> {
@@ -590,8 +562,6 @@ impl<B: Clone + Send + Sync + 'static> PullOperator<B> for BroadcastReceiver<B> 
         })
     }
 }
-
-// ── TakeWhile ────────────────────────────────────────
 
 pub(super) struct PullTakeWhile<B, F> {
     pub(super) child: Box<dyn PullOperator<B>>,
@@ -629,8 +599,6 @@ impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B>
         })
     }
 }
-
-// ── SkipWhile ────────────────────────────────────────
 
 pub(super) struct PullSkipWhile<B, F> {
     pub(super) child: Box<dyn PullOperator<B>>,
@@ -671,8 +639,6 @@ impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B>
     }
 }
 
-// ── Chunks ───────────────────────────────────────────
-
 pub(super) struct PullChunks<B> {
     pub(super) child: Box<dyn PullOperator<B>>,
     pub(super) size: usize,
@@ -706,8 +672,6 @@ impl<B: Send + 'static> PullOperator<Vec<B>> for PullChunks<B> {
     }
 }
 
-// ── EvalMap (async per-element transform) ────────────
-
 pub(super) struct PullEvalMap<B, F> {
     pub(super) child: Box<dyn PullOperator<B>>,
     pub(super) f: F,
@@ -733,8 +697,6 @@ where
         })
     }
 }
-
-// ── EvalFilter (async predicate) ─────────────────────
 
 pub(super) struct PullEvalFilter<B, F> {
     pub(super) child: Box<dyn PullOperator<B>>,
@@ -774,8 +736,6 @@ where
     }
 }
 
-// ── EvalTap (async side-effect) ──────────────────────
-
 pub(super) struct PullEvalTap<B, F> {
     pub(super) child: Box<dyn PullOperator<B>>,
     pub(super) f: F,
@@ -800,8 +760,6 @@ where
         })
     }
 }
-
-// ── HandleError ──────────────────────────────────────
 
 pub(super) struct PullHandleError<B: Send + 'static> {
     pub(super) child: Box<dyn PullOperator<B>>,
@@ -829,8 +787,6 @@ impl<B: Send + 'static> PullOperator<B> for PullHandleError<B> {
         })
     }
 }
-
-// ── Retry ────────────────────────────────────────────
 
 pub(super) struct PullRetry<B: Send + 'static> {
     pub(super) factory: Box<dyn Fn() -> Pipe<B> + Send>,
@@ -861,8 +817,6 @@ impl<B: Send + 'static> PullOperator<B> for PullRetry<B> {
     }
 }
 
-// ── Concurrently (background pipe) ──────────────────
-
 pub(super) struct PullConcurrently<B: Send + 'static> {
     pub(super) inner: Box<dyn PullOperator<B>>,
     pub(super) bg_error: tokio::sync::watch::Receiver<Option<String>>,
@@ -888,8 +842,6 @@ impl<B: Send + 'static> PullOperator<B> for PullConcurrently<B> {
         })
     }
 }
-
-// ── Attempt (error → element) ───────────────────────
 
 pub(super) struct PullAttempt<B: Send + 'static> {
     pub(super) child: Box<dyn PullOperator<B>>,
@@ -920,8 +872,6 @@ impl<B: Send + 'static> PullOperator<Result<B, PipeError>> for PullAttempt<B> {
     }
 }
 
-// ── NoneTerminate (wrap in Some, emit None at end) ──
-
 pub(super) struct PullNoneTerminate<B: Send + 'static> {
     pub(super) child: Box<dyn PullOperator<B>>,
     pub(super) done: bool,
@@ -943,8 +893,6 @@ impl<B: Send + 'static> PullOperator<Option<B>> for PullNoneTerminate<B> {
         })
     }
 }
-
-// ── UnNoneTerminate (stop at first None) ────────────
 
 pub(super) struct PullUnNoneTerminate<B: Send + 'static> {
     pub(super) child: Box<dyn PullOperator<Option<B>>>,

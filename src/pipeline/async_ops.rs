@@ -9,10 +9,6 @@ use super::pull_ops::{PullEvalFilter, PullEvalMap, PullEvalTap};
 use super::Pipe;
 
 impl<B: Send + 'static> Pipe<B> {
-    // ══════════════════════════════════════════════════════
-    // Async element operations (eval_*)
-    // ══════════════════════════════════════════════════════
-
     /// Async per-element transform (like `map` but with `Future`).
     pub fn eval_map<C: Send + 'static, Fut: Future<Output = Result<C, PipeError>> + Send + 'static>(
         self,

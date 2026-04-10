@@ -77,8 +77,6 @@ impl<B: Send + 'static> PullOperator<B> for Receiver<B> {
     }
 }
 
-// ── TaskReceiver (single items from background task) ──
-
 /// Receives individual items from a background task.
 /// Aborts the task on drop.
 pub struct TaskReceiver<B> {

@@ -11,10 +11,6 @@ use super::pull_ops::PullRepeatWith;
 use super::{Emitter, Pipe};
 
 impl<B: Send + 'static> Pipe<B> {
-    // ══════════════════════════════════════════════════════
-    // Constructors
-    // ══════════════════════════════════════════════════════
-
     /// Create a stream from an iterator of elements.
     #[allow(clippy::should_implement_trait)]
     pub fn from_iter(items: impl IntoIterator<Item = B>) -> Self

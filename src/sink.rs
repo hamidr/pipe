@@ -55,8 +55,6 @@ impl<B: Send + 'static, R: Send + 'static> Sink<B, R> {
     }
 }
 
-// ── Built-in sinks ──────────────────────────────────
-
 impl<B: Send + 'static> Sink<B, Vec<B>> {
     /// Sink that collects all elements into a Vec.
     pub fn collect() -> Self {
@@ -91,8 +89,6 @@ impl<B: Send + 'static> Sink<B, ()> {
         })
     }
 }
-
-// ── Pipe integration ──────────────────────────────────
 
 impl<B: Send + 'static> Pipe<B> {
     /// Consume this pipe with a [`Sink`].

@@ -80,8 +80,6 @@ impl From<&str> for PipeError {
 pub type ChunkFut<'a, B> =
     Pin<Box<dyn Future<Output = Result<Option<Vec<B>>, PipeError>> + Send + 'a>>;
 
-// ── Trait ──────────────────────────────────────────────
-
 /// Pull-based operator that yields chunks on demand.
 ///
 /// This is the execution protocol for knot-pipe. External crates
@@ -114,8 +112,6 @@ impl<B: Send + 'static, T: PullOperator<B> + ?Sized> PullOperator<B> for Box<T> 
     }
 }
 
-// ── Source ─────────────────────────────────────────────
-
 pub(crate) struct PullSource<B> {
     items: Option<Vec<B>>,
 }
@@ -140,8 +136,6 @@ impl<B: Send + 'static> PullOperator<B> for PullSource<B> {
         Box::pin(async move { Ok(self.items.take()) })
     }
 }
-
-// ── ArcSource (shared, cloneable) ─────────────────────
 
 const ARC_SOURCE_CHUNK_SIZE: usize = 256;
 
@@ -171,8 +165,6 @@ impl<B: Clone + Send + Sync + 'static> PullOperator<B> for ArcSource<B> {
         })
     }
 }
-
-// ── Unfold (lazy generation from seed) ─────────────────
 
 const DEFAULT_CHUNK_SIZE: usize = 256;
 
@@ -222,8 +214,6 @@ impl<B: Send + 'static, S: Send + 'static, F: Fn(&mut S) -> Option<B> + Send + '
     }
 }
 
-// ── Iterate (infinite from seed + step) ────────────────
-
 pub(crate) struct PullIterate<B, F> {
     current: Option<B>,
     step: F,
@@ -261,8 +251,6 @@ impl<B: Clone + Send + 'static, F: Fn(&B) -> B + Send + 'static> PullOperator<B>
     }
 }
 
-// ── Map (A → B) ───────────────────────────────────────
-
 pub(crate) struct PullMap<A, F> {
     pub(crate) child: Box<dyn PullOperator<A>>,
     pub(crate) f: F,
@@ -280,8 +268,6 @@ impl<A: Send + 'static, B: Send + 'static, F: Fn(A) -> B + Send + 'static> PullO
         })
     }
 }
-
-// ── Filter (A → A) ────────────────────────────────────
 
 pub(crate) struct PullFilter<B, F> {
     pub(crate) child: Box<dyn PullOperator<B>>,
@@ -315,8 +301,6 @@ impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B> for 
     }
 }
 
-// ── AndThen (A → Option<B>) ───────────────────────────
-
 pub(crate) struct PullAndThen<A, F> {
     pub(crate) child: Box<dyn PullOperator<A>>,
     pub(crate) f: F,
@@ -348,8 +332,6 @@ impl<A: Send + 'static, B: Send + 'static, F: Fn(A) -> Option<B> + Send + 'stati
         })
     }
 }
-
-// ── FlatMap (A → Pipe<B>) ─────────────────────────────
 
 pub(crate) struct PullFlatMap<A: Send + 'static, B: Send + 'static, F> {
     child: Box<dyn PullOperator<A>>,
@@ -403,8 +385,6 @@ impl<
     }
 }
 
-// ── Tap (A → A, side-effect) ──────────────────────────
-
 pub(crate) struct PullTap<B, F> {
     pub(crate) child: Box<dyn PullOperator<B>>,
     pub(crate) f: F,
@@ -425,8 +405,6 @@ impl<B: Send + 'static, F: Fn(&B) + Send + 'static> PullOperator<B> for PullTap<
         })
     }
 }
-
-// ── Take ──────────────────────────────────────────────
 
 pub(crate) struct PullTake<B> {
     pub(crate) child: Box<dyn PullOperator<B>>,
@@ -455,8 +433,6 @@ impl<B: Send + 'static> PullOperator<B> for PullTake<B> {
         })
     }
 }
-
-// ── Drop / Skip ───────────────────────────────────────
 
 pub(crate) struct PullDrop<B> {
     pub(crate) child: Box<dyn PullOperator<B>>,
@@ -487,8 +463,6 @@ impl<B: Send + 'static> PullOperator<B> for PullDrop<B> {
     }
 }
 
-// ── Scan (A → B with state) ──────────────────────────
-
 pub(crate) struct PullScan<A, S, F> {
     pub(crate) child: Box<dyn PullOperator<A>>,
     pub(crate) state: S,
@@ -518,8 +492,6 @@ impl<
     }
 }
 
-// ── Pipe (per-element async Operator<A, B>) ───────────
-
 pub(crate) struct PullPipe<A: Send + 'static, B: Send + 'static> {
     pub(crate) operator: std::sync::Arc<dyn Operator<A, B> + Send + Sync>,
     pub(crate) child: Box<dyn PullOperator<A>>,
@@ -542,8 +514,6 @@ impl<A: Send + 'static, B: Send + 'static> PullOperator<B> for PullPipe<A, B> {
         })
     }
 }
-
-// ── Zip (positional pairing) ─────────────────────────
 
 pub(crate) struct PullZip<A: Send + 'static, B: Send + 'static> {
     pub(crate) left: Box<dyn PullOperator<A>>,
@@ -606,8 +576,6 @@ impl<A: Send + 'static, B: Send + 'static> PullOperator<(A, B)> for PullZip<A, B
     }
 }
 
-// ── Terminal helpers ───────────────────────────────────
-
 pub(crate) async fn collect_all<B: Send + 'static>(
     op: &mut dyn PullOperator<B>,
 ) -> Result<Vec<B>, PipeError> {
@@ -636,8 +604,6 @@ pub(crate) async fn fold_all<A: Send + 'static, C, F: Fn(C, A) -> C>(
     }
     Ok(acc)
 }
-
-// ── Tests ──────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

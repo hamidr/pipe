@@ -80,16 +80,10 @@ impl<B: Send + 'static> Pipe<B> {
     }
 }
 
-// ══════════════════════════════════════════════════════
-// Tests
-// ══════════════════════════════════════════════════════
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::operator::PinFut;
-
-    // ── Same-type operations ──────────────────────────
 
     #[tokio::test]
     async fn from_iter_collect() {
@@ -171,8 +165,6 @@ mod tests {
             .unwrap();
         assert_eq!(result, vec![12, 14, 16]);
     }
-
-    // ── Type-changing operations ──────────────────────
 
     #[tokio::test]
     async fn map_changes_type() {
@@ -258,8 +250,6 @@ mod tests {
         assert_eq!(result, vec!["item-5"]);
     }
 
-    // ── Infinite streams ──────────────────────────────
-
     #[tokio::test]
     async fn iterate_naturals() {
         let result = Pipe::iterate(0, |x| x + 1).take(5).collect().await.unwrap();
@@ -292,8 +282,6 @@ mod tests {
         assert_eq!(result, vec!["#1", "#2", "#3"]);
     }
 
-    // ── flat_map ──────────────────────────────────────
-
     #[tokio::test]
     async fn flat_map_same_type() {
         let result = Pipe::from_iter(1..=3)
@@ -314,8 +302,6 @@ mod tests {
             .unwrap();
         assert_eq!(result, vec![1, 2, 3, 4, 5]);
     }
-
-    // ── Custom PullOperator ─────────────────────────────
 
     #[tokio::test]
     async fn from_pull_custom_source() {
@@ -388,8 +374,6 @@ mod tests {
         assert_eq!(result, vec![3, 6, 9, 12]);
     }
 
-    // ── Concurrency ─────────────────────────────────────
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn prefetch_buffers_ahead() {
         let result = Pipe::from_iter(1..=5)
@@ -454,8 +438,6 @@ mod tests {
         assert_eq!(result, vec![(1, "x"), (2, "y")]);
     }
 
-    // ── Partition ─────────────────────────────────────────
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn partition_splits_by_key() {
         let parts = Pipe::from_iter(0..10i64).partition(2, 2, |x| *x as u64);
@@ -496,8 +478,6 @@ mod tests {
         result.sort();
         assert_eq!(result, (1..=20).collect::<Vec<_>>());
     }
-
-    // ── New features ─────────────────────────────────────
 
     #[tokio::test]
     async fn take_while_stops_at_predicate() {
@@ -657,8 +637,6 @@ mod tests {
         assert_eq!(result, vec![10, 20, 30]);
     }
 
-    // ── Terminals ─────────────────────────────────────────
-
     #[tokio::test]
     async fn for_each_runs_side_effect() {
         use std::sync::{Arc, Mutex};
@@ -694,8 +672,6 @@ mod tests {
         let result = Pipe::<i64>::empty().last().await.unwrap();
         assert_eq!(result, None);
     }
-
-    // ── Chain / enumerate / inspect / merge_with ─────────
 
     #[tokio::test]
     async fn chain_sequential() {
@@ -812,8 +788,6 @@ mod tests {
         assert_eq!(b, vec![1, 3, 6]);
     }
 
-    // ── Bracket ───────────────────────────────────────────
-
     #[tokio::test]
     async fn bracket_releases_on_completion() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -879,8 +853,6 @@ mod tests {
         assert_eq!(result, Some(10));
         assert!(released.load(Ordering::SeqCst));
     }
-
-    // ── chunks_timeout / timeout ──────────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn chunks_timeout_flushes_by_count() {
@@ -957,8 +929,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── par_eval_map ──────────────────────────────────────
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn par_eval_map_ordered() {
         let result = Pipe::from_iter(1..=5)
@@ -994,8 +964,6 @@ mod tests {
             .await;
         assert!(result.is_err());
     }
-
-    // ── generate ──────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn generate_basic() {
@@ -1054,8 +1022,6 @@ mod tests {
         assert_eq!(b, vec![1, 2]);
     }
 
-    // ── repeat / repeat_with / interval ───────────────────
-
     #[tokio::test]
     async fn repeat_takes_n() {
         let result = Pipe::repeat(42).take(5).collect().await.unwrap();
@@ -1087,8 +1053,6 @@ mod tests {
         assert!(result[0] <= result[1]);
         assert!(result[1] <= result[2]);
     }
-
-    // ── sliding_window / unzip ────────────────────────────
 
     #[tokio::test]
     async fn sliding_window_basic() {
@@ -1133,8 +1097,6 @@ mod tests {
         assert_eq!(a, vec![1, 2, 3]);
         assert_eq!(b, vec!["a", "b", "c"]);
     }
-
-    // ── interleave / intersperse / flatten / throttle ─────
 
     #[tokio::test]
     async fn interleave_round_robin() {
@@ -1206,8 +1168,6 @@ mod tests {
         // At least 20ms for 3 elements at 10ms throttle (first is immediate)
         assert!(elapsed >= std::time::Duration::from_millis(20));
     }
-
-    // ── attempt / noneTerminate / zipWith / broadcastThrough ──
 
     #[tokio::test]
     async fn attempt_wraps_ok() {
@@ -1282,8 +1242,6 @@ mod tests {
         let result = a.zip_with(b, |x, y| x + y).collect().await.unwrap();
         assert_eq!(result, vec![11, 22, 33]);
     }
-
-    // ── concurrently ─────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrently_main_output_preserved() {

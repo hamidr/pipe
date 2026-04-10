@@ -8,10 +8,6 @@ use super::pull_ops::{BracketState, PullBracket, PullHandleError, PullRetry};
 use super::Pipe;
 
 impl<B: Send + 'static> Pipe<B> {
-    // ══════════════════════════════════════════════════════
-    // Resource safety
-    // ══════════════════════════════════════════════════════
-
     /// Acquire a resource, build a pipe from it, and guarantee cleanup.
     ///
     /// `acquire` runs lazily on first pull. `use_resource` builds a
@@ -48,10 +44,6 @@ impl<B: Send + 'static> Pipe<B> {
             })
         })
     }
-
-    // ══════════════════════════════════════════════════════
-    // Error recovery
-    // ══════════════════════════════════════════════════════
 
     /// On error, switch to a fallback stream produced by `f`.
     pub fn handle_error_with(

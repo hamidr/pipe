@@ -15,10 +15,6 @@ use super::pull_ops::{
 use super::Pipe;
 
 impl<B: Send + 'static> Pipe<B> {
-    // ══════════════════════════════════════════════════════
-    // Type-changing operators
-    // ══════════════════════════════════════════════════════
-
     /// Transform each element (may change type).
     pub fn map<C: Send + 'static>(self, f: impl Fn(B) -> C + Send + Sync + 'static) -> Pipe<C> {
         let parent = self.factory;
@@ -96,10 +92,6 @@ impl<B: Send + 'static> Pipe<B> {
             })
         })
     }
-
-    // ══════════════════════════════════════════════════════
-    // Same-type operators
-    // ══════════════════════════════════════════════════════
 
     /// Keep elements matching the predicate.
     pub fn filter(self, f: impl Fn(&B) -> bool + Send + Sync + 'static) -> Self {
@@ -263,10 +255,6 @@ impl<B: Send + 'static> Pipe<B> {
             })
         })
     }
-
-    // ══════════════════════════════════════════════════════
-    // Stream composition
-    // ══════════════════════════════════════════════════════
 
     /// Apply a stream-level transform (FS2 `through`).
     ///

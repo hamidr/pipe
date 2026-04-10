@@ -56,8 +56,6 @@ impl Default for CancelToken {
     }
 }
 
-// ── PullCancel operator ─────────────────────────────
-
 pub(crate) struct PullCancel<B: Send + 'static> {
     pub(crate) child: Box<dyn PullOperator<B>>,
     pub(crate) token: CancelToken,

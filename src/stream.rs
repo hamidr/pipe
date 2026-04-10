@@ -12,10 +12,6 @@ use crate::pull::{ChunkFut, PipeError, PullOperator};
 
 const DEFAULT_CHUNK_SIZE: usize = 256;
 
-// ══════════════════════════════════════════════════════
-// Stream → Pipe
-// ══════════════════════════════════════════════════════
-
 struct PullFromStream<B> {
     stream: Pin<Box<dyn Stream<Item = B> + Send>>,
     chunk_size: usize,
@@ -52,10 +48,6 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 }
-
-// ══════════════════════════════════════════════════════
-// Pipe → Stream
-// ══════════════════════════════════════════════════════
 
 /// A [`Stream`] that yields elements from a [`Pipe`].
 ///
