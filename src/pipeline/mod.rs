@@ -1158,6 +1158,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn distinct_removes_all_duplicates() {
+        let result = Pipe::from_iter(vec![1, 2, 3, 2, 1, 4, 3])
+            .distinct()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn distinct_by_key() {
+        let result = Pipe::from_iter(vec!["apple", "ant", "banana", "avocado"])
+            .distinct_by(|s| s.chars().next().unwrap())
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["apple", "banana"]);
+    }
+
+    #[tokio::test]
     async fn changes_all_different() {
         let result = Pipe::from_iter(vec![1, 2, 3])
             .changes()

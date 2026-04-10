@@ -342,6 +342,43 @@ impl<B: Send + 'static> Pipe<B> {
         .and_then(|x| x)
     }
 
+    /// Remove all duplicate elements, keeping only the first occurrence.
+    ///
+    /// Uses a `HashSet` to track seen elements. For consecutive-only
+    /// deduplication (no memory growth), use [`changes`](Self::changes).
+    pub fn distinct(self) -> Self
+    where
+        B: std::hash::Hash + Eq + Clone + Sync,
+    {
+        self.scan(std::collections::HashSet::<B>::new(), |seen, item| {
+            if seen.insert(item.clone()) {
+                Some(item)
+            } else {
+                None
+            }
+        })
+        .and_then(|x| x)
+    }
+
+    /// Remove duplicates by key, keeping the first occurrence of each key.
+    pub fn distinct_by<K: std::hash::Hash + Eq + Clone + Send + Sync + 'static>(
+        self,
+        key: impl Fn(&B) -> K + Send + Sync + 'static,
+    ) -> Self
+    where
+        B: Clone + Sync,
+    {
+        let key = Arc::new(key);
+        self.scan(std::collections::HashSet::<K>::new(), move |seen, item| {
+            if seen.insert(key(&item)) {
+                Some(item)
+            } else {
+                None
+            }
+        })
+        .and_then(|x| x)
+    }
+
     /// Pair each element with its index: `(0, a), (1, b), (2, c), ...`
     pub fn enumerate(self) -> Pipe<(usize, B)> {
         self.scan(0usize, |idx, item| {
