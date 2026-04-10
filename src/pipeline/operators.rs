@@ -135,38 +135,62 @@ impl<B: Send + 'static> Pipe<B> {
         let f = Arc::new(f);
         Pipe::from_factory(move || {
             let (out_tx, out_rx) =
-                tokio::sync::mpsc::channel::<Vec<C>>(2);
+                tokio::sync::mpsc::channel::<Result<Vec<C>, crate::pull::PipeError>>(2);
             let mut outer = parent();
             let f = Arc::clone(&f);
 
             let handle = tokio::spawn(async move {
                 let mut current_handle: Option<tokio::task::AbortHandle> = None;
 
-                while let Ok(Some(chunk)) = outer.next_chunk().await {
-                    for item in chunk {
-                        // Cancel the previous inner pipe
-                        if let Some(h) = current_handle.take() {
-                            h.abort();
-                        }
-                        let inner = f(item);
-                        let tx = out_tx.clone();
-                        let h = tokio::spawn(async move {
-                            let mut pull = inner.into_pull();
-                            while let Ok(Some(c)) = pull.next_chunk().await {
-                                if tx.send(c).await.is_err() {
-                                    break;
+                loop {
+                    let chunk = tokio::select! {
+                        result = outer.next_chunk() => result,
+                        _ = out_tx.closed() => break,
+                    };
+                    match chunk {
+                        Ok(Some(items)) => {
+                            for item in items {
+                                if let Some(h) = current_handle.take() {
+                                    h.abort();
                                 }
+                                let inner = f(item);
+                                let tx = out_tx.clone();
+                                let h = tokio::spawn(async move {
+                                    let mut pull = inner.into_pull();
+                                    loop {
+                                        let chunk = tokio::select! {
+                                            result = pull.next_chunk() => result,
+                                            _ = tx.closed() => break,
+                                        };
+                                        match chunk {
+                                            Ok(Some(c)) => {
+                                                if tx.send(Ok(c)).await.is_err() { break; }
+                                            }
+                                            Ok(None) => break,
+                                            Err(e) => {
+                                                let _ = tx.send(Err(e)).await;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                });
+                                current_handle = Some(h.abort_handle());
                             }
-                        });
-                        current_handle = Some(h.abort_handle());
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            let _ = out_tx.send(Err(e)).await;
+                            break;
+                        }
                     }
                 }
-                // Wait for the last inner pipe to finish
-                // (coordinator drops out_tx here, channel closes when
-                // the last inner task also drops its clone)
+                // Let the last inner task finish naturally.
+                // It holds a tx clone, so the channel stays open
+                // until it completes.
+                drop(current_handle);
             });
 
-            Box::new(crate::channel::Receiver::from_mpsc(out_rx).with_abort(handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(out_rx, handle.abort_handle()))
         })
     }
 
