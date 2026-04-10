@@ -38,7 +38,7 @@ use crate::pull::{ChunkFut, PipeError, PullOperator};
 ///
 /// Call [`close`](Self::close) to signal completion -- all
 /// subscriber pipes will drain and terminate.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Topic<B: Clone + Send + 'static> {
     tx: broadcast::Sender<B>,
     close_tx: watch::Sender<bool>,

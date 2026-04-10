@@ -42,6 +42,7 @@ name = "pipe"
 version = "0.2.0"
 dependencies = [
  "futures-core",
+ "pipe-io",
  "pipe-macros",
  "tokio",
 ]

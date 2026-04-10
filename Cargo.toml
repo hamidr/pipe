@@ -13,3 +13,6 @@ repository = "https://github.com/hamidr/pipe"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "time", "net"] }
 futures-core = "0.3"
 pipe-macros = { path = "pipe-macros" }
+
+[dev-dependencies]
+pipe-io = { path = "pipe-io" }
