@@ -425,6 +425,50 @@ async fn par_join_limits_concurrency() {
         "max concurrent was {}, expected <= 3", max_seen.load(Ordering::SeqCst));
 }
 
+/// par_join propagates errors from inner pipes (fail-fast)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn par_join_propagates_inner_error() {
+    use pipe::pull::PipeError;
+
+    let result = Pipe::from_iter(0..5i64)
+        .map(|i| {
+            Pipe::from_iter(vec![i]).eval_map(move |x| async move {
+                if x == 3 {
+                    Err(PipeError::Custom("boom".into()))
+                } else {
+                    tokio::task::yield_now().await;
+                    Ok(x)
+                }
+            })
+        })
+        .par_join(5)
+        .collect()
+        .await;
+
+    assert!(result.is_err(), "expected error but got {:?}", result);
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("boom"), "expected 'boom' but got: {err}");
+}
+
+/// par_join propagates errors from outer pipe
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn par_join_propagates_outer_error() {
+    use pipe::pull::PipeError;
+
+    // Outer pipe: emit one inner pipe then error
+    let result = Pipe::from_iter(vec![Pipe::from_iter(vec![1i64])])
+        .chain(
+            Pipe::from_iter(vec![0i64]).eval_map(|_| async {
+                Err::<Pipe<i64>, _>(PipeError::Custom("outer fail".into()))
+            }),
+        )
+        .par_join_unbounded()
+        .collect()
+        .await;
+
+    assert!(result.is_err());
+}
+
 /// par_join with cancel token stops cleanly
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn par_join_with_take() {

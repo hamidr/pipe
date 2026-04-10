@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::pull::{PullOperator, PullZip};
+use crate::pull::{PipeError, PullOperator, PullZip};
 
 use super::pull_ops::{BroadcastReceiver, GuardedPull, LazyFanOut, LazyPartition};
 use super::Pipe;
@@ -256,34 +256,60 @@ impl<B: Send + 'static> Pipe<Pipe<B>> {
         let parent = self.factory;
         let max_open = max_open.max(1);
         Pipe::from_factory(move || {
-            let (tx, rx) = crate::channel::bounded::<B>(max_open);
+            let (out_tx, out_rx) =
+                tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(max_open);
             let mut outer = parent();
 
             let handle = tokio::spawn(async move {
                 let semaphore = Arc::new(tokio::sync::Semaphore::new(max_open));
 
-                while let Ok(Some(pipes)) = outer.next_chunk().await {
-                    for pipe in pipes {
-                        let permit = match semaphore.clone().acquire_owned().await {
-                            Ok(p) => p,
-                            Err(_) => return,
-                        };
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            let mut inner = pipe.into_pull();
-                            while let Ok(Some(chunk)) = inner.next_chunk().await {
-                                if tx.send(chunk).await.is_err() {
-                                    break;
-                                }
+                loop {
+                    let pipes = tokio::select! {
+                        result = outer.next_chunk() => result,
+                        _ = out_tx.closed() => break,
+                    };
+                    match pipes {
+                        Ok(Some(pipes)) => {
+                            for pipe in pipes {
+                                let permit = match semaphore.clone().acquire_owned().await {
+                                    Ok(p) => p,
+                                    Err(_) => return,
+                                };
+                                let tx = out_tx.clone();
+                                tokio::spawn(async move {
+                                    let mut inner = pipe.into_pull();
+                                    loop {
+                                        let chunk = tokio::select! {
+                                            result = inner.next_chunk() => result,
+                                            _ = tx.closed() => break,
+                                        };
+                                        match chunk {
+                                            Ok(Some(chunk)) => {
+                                                if tx.send(Ok::<_, PipeError>(chunk)).await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            Ok(None) => break,
+                                            Err(e) => {
+                                                let _ = tx.send(Err(e)).await;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    drop(permit);
+                                });
                             }
-                            drop(permit);
-                        });
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            let _ = out_tx.send(Err(e)).await;
+                            break;
+                        }
                     }
                 }
-                // Drop coordinator's tx; channel closes when all sub-tasks finish.
             });
 
-            Box::new(rx.with_abort(handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(out_rx, handle.abort_handle()))
         })
     }
 
@@ -298,26 +324,53 @@ impl<B: Send + 'static> Pipe<Pipe<B>> {
     pub fn par_join_unbounded(self) -> Pipe<B> {
         let parent = self.factory;
         Pipe::from_factory(move || {
-            let (tx, rx) = crate::channel::bounded::<B>(16);
+            let (out_tx, out_rx) =
+                tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(16);
             let mut outer = parent();
 
             let handle = tokio::spawn(async move {
-                while let Ok(Some(pipes)) = outer.next_chunk().await {
-                    for pipe in pipes {
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            let mut inner = pipe.into_pull();
-                            while let Ok(Some(chunk)) = inner.next_chunk().await {
-                                if tx.send(chunk).await.is_err() {
-                                    break;
-                                }
+                loop {
+                    let pipes = tokio::select! {
+                        result = outer.next_chunk() => result,
+                        _ = out_tx.closed() => break,
+                    };
+                    match pipes {
+                        Ok(Some(pipes)) => {
+                            for pipe in pipes {
+                                let tx = out_tx.clone();
+                                tokio::spawn(async move {
+                                    let mut inner = pipe.into_pull();
+                                    loop {
+                                        let chunk = tokio::select! {
+                                            result = inner.next_chunk() => result,
+                                            _ = tx.closed() => break,
+                                        };
+                                        match chunk {
+                                            Ok(Some(chunk)) => {
+                                                if tx.send(Ok::<_, PipeError>(chunk)).await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            Ok(None) => break,
+                                            Err(e) => {
+                                                let _ = tx.send(Err(e)).await;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                });
                             }
-                        });
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            let _ = out_tx.send(Err(e)).await;
+                            break;
+                        }
                     }
                 }
             });
 
-            Box::new(rx.with_abort(handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(out_rx, handle.abort_handle()))
         })
     }
 }

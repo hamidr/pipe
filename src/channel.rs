@@ -143,6 +143,40 @@ impl<B: Send + 'static> PullOperator<B> for TaskResultReceiver<B> {
     }
 }
 
+/// Receives `Result<Vec<B>, PipeError>` chunks from background tasks.
+/// Aborts the coordinator on drop. Propagates errors to the consumer.
+pub struct ChunkResultReceiver<B> {
+    rx: tokio::sync::mpsc::Receiver<Result<Vec<B>, PipeError>>,
+    abort: tokio::task::AbortHandle,
+}
+
+impl<B> ChunkResultReceiver<B> {
+    pub fn new(
+        rx: tokio::sync::mpsc::Receiver<Result<Vec<B>, PipeError>>,
+        abort: tokio::task::AbortHandle,
+    ) -> Self {
+        Self { rx, abort }
+    }
+}
+
+impl<B> Drop for ChunkResultReceiver<B> {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+
+impl<B: Send + 'static> PullOperator<B> for ChunkResultReceiver<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.rx.recv().await {
+                Some(Ok(chunk)) => Ok(Some(chunk)),
+                Some(Err(e)) => Err(e),
+                None => Ok(None),
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
