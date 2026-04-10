@@ -448,7 +448,7 @@ pub(super) struct LazyPartition<B: Send + 'static> {
 }
 
 struct LazyPartitionState<B> {
-    receivers: std::sync::Mutex<Vec<Option<crate::channel::Receiver<B>>>>,
+    receivers: std::sync::Mutex<Vec<Option<(crate::channel::Receiver<B>, Arc<SharedAbort>)>>>,
 }
 
 impl<B: Send + 'static> LazyPartition<B> {
@@ -498,10 +498,10 @@ impl<B: Send + 'static> LazyPartition<B> {
                 }
             });
 
-            let abort = handle.abort_handle();
+            let abort = SharedAbort::new(handle.abort_handle());
             let receivers: Vec<_> = receivers
                 .into_iter()
-                .map(|rx| Some(rx.with_abort(abort.clone())))
+                .map(|rx| Some((rx, Arc::clone(&abort))))
                 .collect();
 
             LazyPartitionState {
@@ -510,7 +510,7 @@ impl<B: Send + 'static> LazyPartition<B> {
         })
     }
 
-    pub(super) fn take_receiver(&self, idx: usize) -> crate::channel::Receiver<B> {
+    pub(super) fn take_receiver(&self, idx: usize) -> (crate::channel::Receiver<B>, Arc<SharedAbort>) {
         let state = self.ensure_init();
         state.receivers.lock().unwrap()[idx]
             .take()
@@ -577,6 +577,19 @@ where
                 }
             }
         })
+    }
+}
+
+/// Partition receiver that holds a ref-counted abort guard.
+/// Source task is only cancelled when ALL partition branches are dropped.
+pub(super) struct PartitionReceiver<B: Send + 'static> {
+    pub(super) inner: crate::channel::Receiver<B>,
+    pub(super) _abort: Arc<SharedAbort>,
+}
+
+impl<B: Send + 'static> PullOperator<B> for PartitionReceiver<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        self.inner.next_chunk()
     }
 }
 
