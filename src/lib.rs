@@ -45,6 +45,7 @@ pub mod pipeline;
 pub mod pull;
 pub mod sink;
 pub mod stream;
+pub mod topic;
 pub mod transform;
 
 pub use pipe_macros::{operator, pull_operator};
