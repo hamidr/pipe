@@ -49,7 +49,7 @@ pub mod stream;
 pub mod topic;
 pub mod transform;
 
-pub use pipe_macros::{operator, pull_operator};
+pub use pipe_macros::{operator, pipe_fn, pull_operator};
 
 /// Construct a `Pipe` from literal elements.
 ///

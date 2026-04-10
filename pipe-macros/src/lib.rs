@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, FnArg, ImplItem, ItemImpl, Pat, ReturnType, Type};
+use syn::{parse_macro_input, FnArg, ImplItem, ItemFn, ItemImpl, Pat, ReturnType, Type};
 
 /// Derive an `Operator<A, B>` impl from a plain impl block.
 ///
@@ -96,6 +96,72 @@ pub fn pull_operator(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+/// Derive an `Operator<A, B>` from a plain async function.
+///
+/// Generates a zero-sized struct with the function's name (PascalCase)
+/// and implements `Operator<A, B>` on it. No struct or impl block needed.
+///
+/// ```ignore
+/// #[pipe_fn]
+/// async fn double(x: i64) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+///     Ok(x * 2)
+/// }
+///
+/// // Generates: struct Double; impl Operator<i64, i64> for Double { ... }
+/// let result = pipe![1, 2, 3].pipe(Double).collect().await?;
+/// ```
+#[proc_macro_attribute]
+pub fn pipe_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+
+    let fn_name = &func.sig.ident;
+    let struct_name = syn::Ident::new(
+        &to_pascal_case(&fn_name.to_string()),
+        fn_name.span(),
+    );
+
+    let param = func
+        .sig
+        .inputs
+        .first()
+        .expect("#[pipe_fn] function must have one parameter");
+    let (input_type, input_name) = match param {
+        FnArg::Typed(pat_type) => (&*pat_type.ty, &*pat_type.pat),
+        _ => panic!("#[pipe_fn] parameter must be typed"),
+    };
+
+    let output_type = extract_result_ok_type(&func.sig.output);
+    let body = &func.block;
+
+    let expanded = quote! {
+        #[derive(Debug)]
+        struct #struct_name;
+
+        impl pipe::operator::Operator<#input_type, #output_type> for #struct_name {
+            fn execute<'__op>(&'__op self, #input_name: #input_type)
+                -> pipe::operator::PinFut<'__op, #output_type>
+            {
+                Box::pin(async move #body)
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 fn extract_second_param(sig: &syn::Signature) -> (&Type, &Pat) {

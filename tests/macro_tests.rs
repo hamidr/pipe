@@ -235,3 +235,45 @@ async fn eval_for_each_with_async_io() {
         .unwrap();
     assert_eq!(*results.lock().unwrap(), vec![11, 21, 31]);
 }
+
+#[pipe::pipe_fn]
+async fn triple(x: i64) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(x * 3)
+}
+
+#[tokio::test]
+async fn pipe_fn_basic() {
+    let result = pipe![1, 2, 3].pipe(Triple).collect().await.unwrap();
+    assert_eq!(result, vec![3, 6, 9]);
+}
+
+#[pipe::pipe_fn]
+async fn add_prefix(s: String) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(format!("hello_{s}"))
+}
+
+#[tokio::test]
+async fn pipe_fn_type_change() {
+    let result = pipe!["a".to_string(), "b".to_string()]
+        .pipe(AddPrefix)
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(result, vec!["hello_a", "hello_b"]);
+}
+
+#[pipe::pipe_fn]
+async fn to_upper_case(s: String) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(s.to_uppercase())
+}
+
+#[tokio::test]
+async fn pipe_fn_chained() {
+    let result = pipe!["foo".to_string(), "bar".to_string()]
+        .pipe(ToUpperCase)
+        .pipe(AddPrefix)
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(result, vec!["hello_FOO", "hello_BAR"]);
+}
