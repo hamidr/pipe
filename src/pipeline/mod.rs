@@ -875,6 +875,35 @@ mod tests {
         assert!(released.load(Ordering::SeqCst));
     }
 
+    #[tokio::test]
+    async fn on_finalize_runs_on_completion() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let finalized = Arc::new(AtomicBool::new(false));
+        let f = finalized.clone();
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .on_finalize(move || f.store(true, Ordering::SeqCst))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+        assert!(finalized.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn on_finalize_runs_on_early_drop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let finalized = Arc::new(AtomicBool::new(false));
+        let f = finalized.clone();
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .on_finalize(move || f.store(true, Ordering::SeqCst))
+            .take(1)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1]);
+        assert!(finalized.load(Ordering::SeqCst));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn chunks_timeout_flushes_by_count() {
         let result = Pipe::from_iter(1..=7)

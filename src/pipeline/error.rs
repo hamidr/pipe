@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::pull::PipeError;
 
-use super::pull_ops::{BracketState, PullBracket, PullHandleError, PullRetry};
+use super::pull_ops::{BracketState, PullBracket, PullHandleError, PullOnFinalize, PullRetry};
 use super::Pipe;
 
 impl<B: Send + 'static> Pipe<B> {
@@ -42,6 +42,20 @@ impl<B: Send + 'static> Pipe<B> {
             Box::new(PullBracket {
                 state: BracketState::Pending { acquire, use_resource, release },
             })
+        })
+    }
+
+    /// Run a callback when this pipe completes, errors, or is dropped.
+    ///
+    /// Simpler than [`bracket`](Self::bracket) when you don't need
+    /// acquire/release lifecycle -- just cleanup.
+    pub fn on_finalize(self, f: impl Fn() + Send + Sync + 'static) -> Self {
+        let parent = self.factory;
+        let f = Arc::new(f);
+        Self::from_factory(move || {
+            let child = parent();
+            let f = Arc::clone(&f);
+            Box::new(PullOnFinalize { child, finalizer: Some(f) })
         })
     }
 

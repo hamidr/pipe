@@ -518,6 +518,36 @@ impl<B: Send + 'static> LazyPartition<B> {
     }
 }
 
+/// Runs a finalizer when the inner pipe completes, errors, or is dropped.
+pub(super) struct PullOnFinalize<B: Send + 'static> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) finalizer: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl<B: Send + 'static> Drop for PullOnFinalize<B> {
+    fn drop(&mut self) {
+        if let Some(f) = self.finalizer.take() {
+            f();
+        }
+    }
+}
+
+impl<B: Send + 'static> PullOperator<B> for PullOnFinalize<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async {
+            match self.child.next_chunk().await {
+                Ok(Some(chunk)) => Ok(Some(chunk)),
+                done => {
+                    if let Some(f) = self.finalizer.take() {
+                        f();
+                    }
+                    done
+                }
+            }
+        })
+    }
+}
+
 /// Wraps a PullOperator with abort handles that cancel background tasks on drop.
 pub(super) struct GuardedPull<B: Send + 'static> {
     pub(super) inner: Box<dyn PullOperator<B>>,
