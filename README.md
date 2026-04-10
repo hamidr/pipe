@@ -23,6 +23,9 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 pipe = { git = "https://github.com/hamidr/pipe" }
+
+# Optional: I/O constructors for files, TCP, UDP
+pipe-io = { git = "https://github.com/hamidr/pipe" }
 ```
 
 Requires **Tokio** as the async runtime.
@@ -36,6 +39,8 @@ Requires **Tokio** as the async runtime.
 | `Transform<A, B>` | Reusable, composable, cloneable stream transform. |
 | `Sink<B, R>` | Reusable, cloneable output destination. |
 | `Operator<A, B>` | Per-element async transform with captured state. |
+| `Topic<B>` | Pub/sub broadcast -- multiple subscribers receive the same messages. |
+| `Signal<B>` | Reactive state -- holds a current value, emits changes to subscribers. |
 | `CancelToken` | Cooperative cancellation for graceful shutdown. |
 | `Emitter<B>` | Yield handle for async generator patterns. |
 
@@ -52,7 +57,8 @@ Pipe::iterate(init, |x| x + 1)        // infinite: init, f(init), ...
 Pipe::repeat(value)                    // infinite constant
 Pipe::repeat_with(|| factory())        // infinite from factory
 Pipe::interval(duration)               // periodic Instant ticks
-Pipe::generate(|tx| async { ... })     // async generator via Emitter
+Pipe::generate(|tx| async { ... })     // async generator via Emitter (cloneable)
+Pipe::generate_once(|tx| async { ... }) // async generator (single-use, owns captures)
 Pipe::from_reader(reader)              // AsyncRead -> Pipe<Vec<u8>>
 Pipe::from_stream(stream)              // futures::Stream -> Pipe
 Pipe::from_pull(factory)               // custom PullOperator (cloneable)
@@ -68,21 +74,26 @@ Pipe::retry(factory, max_retries)      // retry from scratch on error
 .filter(predicate)                     // keep matching elements
 .and_then(f)                           // fused map + filter via Option
 .flat_map(f)                           // one-to-many expansion
+.switch_map(f)                         // latest-wins: cancel previous inner pipe
 .scan(init, f)                         // stateful transform
 .tap(f) / .inspect(f)                  // side-effect, pass through
 .take(n) / .skip(n)                    // first/drop N elements
 .take_while(p) / .skip_while(p)        // predicate-based slicing
 .enumerate()                           // (index, element) pairs
+.changes()                             // emit only when value changes
+.distinct() / .distinct_by(key)        // deduplicate all (via HashSet)
+.group_adjacent_by(key)                // group consecutive same-key runs
 .intersperse(separator)                // insert between elements
 .chunks(size)                          // group into Vec<B>
 .sliding_window(size)                  // overlapping windows
 .chain(other)                          // sequential composition
 .interleave(other)                     // deterministic round-robin
 .zip(other) / .zip_with(other, f)      // positional pairing
-.flatten()                             // Pipe<Pipe<B>> -> Pipe<B>
+.flatten()                             // Pipe<Pipe<B>> -> Pipe<B> (sequential)
 .unchunks()                            // Pipe<Vec<B>> -> Pipe<B>
 .attempt()                             // errors -> Result elements
 .none_terminate() / .un_none_terminate() // Option-based termination
+.on_finalize(f)                        // cleanup on completion/error/drop
 .with_cancel(token)                    // stop on CancelToken signal
 .meter_with(name, callback)            // observability hook
 ```
@@ -103,6 +114,7 @@ Pipe::retry(factory, max_retries)      // retry from scratch on error
 ```rust
 .timeout(duration)                     // error if pull exceeds deadline
 .throttle(duration)                    // rate-limit output
+.delay_by(duration)                    // delay each element
 .debounce(duration)                    // emit after quiet period
 .chunks_timeout(max_size, duration)    // batch by count or time
 ```
@@ -118,6 +130,8 @@ Pipe::merge(vec![a, b, c])            // concurrent fan-in
 .partition(n, buf, key_fn)             // hash-partition across N branches
 .unzip(buffer_size)                    // Pipe<(A, B)> -> (Pipe<A>, Pipe<B>)
 .concurrently(background)              // run background alongside self
+.par_join(n)                           // Pipe<Pipe<B>> -> Pipe<B> (bounded concurrency)
+.par_join_unbounded()                  // Pipe<Pipe<B>> -> Pipe<B> (unlimited)
 ```
 
 ### Error handling
@@ -125,6 +139,7 @@ Pipe::merge(vec![a, b, c])            // concurrent fan-in
 ```rust
 .handle_error_with(|e| fallback_pipe)  // switch to fallback on error
 .attempt()                             // errors -> Result elements
+Pipe::bracket(acquire, use_fn, release) // guaranteed cleanup via Arc<R>
 Pipe::retry(factory, max_retries)      // retry from scratch on error
 ```
 
@@ -133,12 +148,34 @@ Pipe::retry(factory, max_retries)      // retry from scratch on error
 ```rust
 .collect().await?                      // -> Vec<B>
 .fold(init, f).await?                  // -> single value
+.reduce(f).await?                      // -> Option<B> (no initial value)
 .count().await?                        // -> usize
 .for_each(f).await?                    // side-effect, discard
+.eval_for_each(f).await?               // async side-effect
 .first().await? / .last().await?       // -> Option<B>
 .into_writer(writer).await?            // drain to AsyncWrite
 .into_stream()                         // -> impl Stream<Item = Result<B>>
 .drain_to(&sink).await?                // consume via Sink
+```
+
+### Reactive primitives
+
+```rust
+// Topic: pub/sub broadcast
+let topic = Topic::new(256);
+let sub1 = topic.subscribe();          // Pipe<B>
+let sub2 = topic.subscribe();          // independent subscriber
+topic.publish(value)?;                 // broadcast to all subscribers
+topic.close();                         // subscribers complete
+
+// Signal: reactive state
+let signal = Signal::new(0);
+let changes = signal.subscribe();      // Pipe<B>, starts with current value
+signal.set(42);                        // notify all subscribers
+signal.get()                           // read current value
+
+// Convert pipe to signal
+let sig = some_pipe.hold(initial);     // track latest value
 ```
 
 ### Composition
@@ -152,40 +189,38 @@ Sink::collect() / Sink::count() / ...  // reusable output destinations
 
 ## Macros
 
-Four macros reduce boilerplate for common patterns.
-
 ### `pipe![]` -- literal pipe construction
 
 ```rust
-use pipe::pipe;
-
 let p = pipe![1, 2, 3];
 let result = p.filter(|x| x % 2 != 0).collect().await?;
 assert_eq!(result, vec![1, 3]);
 ```
 
-### `pipe_gen!` -- async generator shorthand
+### `pipe_gen!` / `pipe_gen_once!` -- async generators
 
-Wraps `Pipe::generate`, removing the `async move` and trailing `Ok(())`.
+`pipe_gen!` wraps `Pipe::generate` (cloneable, captures must be `Clone`).
+`pipe_gen_once!` wraps `Pipe::generate_once` (single-use, owns captures).
 
 ```rust
-use pipe::pipe_gen;
-
+// Cloneable generator
 let p = pipe_gen!(tx => {
-    for i in 0..5 {
-        tx.emit(i).await?;
+    for i in 0..5 { tx.emit(i).await?; }
+});
+
+// Single-use generator (can capture owned resources)
+let listener = TcpListener::bind("0.0.0.0:8080").await?;
+let p = pipe_gen_once!(tx => {
+    loop {
+        let (stream, _) = listener.accept().await?;
+        tx.emit(stream).await?;
     }
 });
 ```
 
 ### `#[operator]` -- derive `Operator<A, B>`
 
-Write a plain `async fn execute` and the macro generates the trait impl.
-The struct must `#[derive(Debug)]` separately.
-
 ```rust
-use pipe::prelude::*;
-
 #[derive(Debug)]
 struct Double;
 
@@ -202,11 +237,7 @@ assert_eq!(result, vec![2, 4, 6]);
 
 ### `#[pull_operator]` -- derive `PullOperator<B>`
 
-Write a plain `async fn next_chunk` and the macro generates the trait impl.
-
 ```rust
-use pipe::prelude::*;
-
 struct Countdown { n: usize }
 
 #[pull_operator]
@@ -223,23 +254,73 @@ let result = Pipe::from_pull_once(Countdown { n: 3 }).collect().await?;
 assert_eq!(result, vec![1, 2, 3]);
 ```
 
-## Examples
+## pipe-io
 
-### File processing
+The `pipe-io` crate provides ergonomic I/O constructors.
+
+### File I/O
 
 ```rust
-use tokio::fs::File;
+use pipe_io::file;
 
-let reader = File::open("input.txt").await?;
-let writer = File::create("output.txt").await?;
+// Read lines from a file
+let lines = file::lines("input.txt")
+    .filter(|l| !l.is_empty())
+    .map(|l| l.to_uppercase())
+    .collect().await?;
 
-Pipe::from_reader(reader)
-    .lines()
-    .filter(|line| !line.is_empty())
-    .map(|line| format!("{}\n", line.to_uppercase()))
-    .into_writer(writer)
+// Read raw bytes
+let bytes = file::read("data.bin").collect().await?;
+```
+
+### TCP server
+
+```rust
+use pipe_io::net;
+
+net::tcp_server("0.0.0.0:8080".parse()?)
+    .map(|conn| {
+        let addr = conn.addr();
+        let (lines, writer) = conn.into_lines();
+        lines.eval_map(move |line| {
+            let writer = writer.clone();
+            async move {
+                writer.write_all(format!("echo: {line}\n").as_bytes()).await?;
+                Ok(format!("[{addr}] {line}"))
+            }
+        })
+    })
+    .par_join_unbounded()
+    .for_each(|log| println!("{log}"))
     .await?;
 ```
+
+### Chat server (using Topic)
+
+```rust
+use pipe::topic::Topic;
+use pipe_io::net;
+
+let topic = Topic::new(256);
+
+net::tcp_server("0.0.0.0:8080".parse()?)
+    .pipe(Accept { topic })        // register + subscribe each connection
+    .par_join_unbounded()          // handle all connections concurrently
+    .for_each(|_| {})
+    .await?;
+```
+
+### UDP
+
+```rust
+use pipe_io::net;
+
+net::udp_bind("0.0.0.0:9090".parse()?)
+    .for_each(|dg| println!("{} bytes from {}", dg.data.len(), dg.addr))
+    .await?;
+```
+
+## Examples
 
 ### Graceful shutdown
 
@@ -267,18 +348,7 @@ impl SqlCursor {
     }
 }
 
-// Cloneable via factory
 let pipe = Pipe::from_pull(|| Box::new(SqlCursor::new(conn, query)));
-```
-
-### Async generator
-
-```rust
-let pipe = pipe_gen!(tx => {
-    for i in 0..100 {
-        tx.emit(i).await?;
-    }
-});
 ```
 
 ### Reusable transforms and sinks
