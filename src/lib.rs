@@ -43,6 +43,7 @@ pub mod io;
 pub mod operator;
 pub mod pipeline;
 pub mod pull;
+pub mod signal;
 pub mod sink;
 pub mod stream;
 pub mod topic;
