@@ -20,14 +20,14 @@ use crate::pull::{PipeError, PullOperator};
 
 /// Handle for emitting elements from [`Pipe::generate`].
 pub struct Emitter<B> {
-    pub(crate) tx: tokio::sync::mpsc::Sender<Vec<B>>,
+    pub(crate) tx: tokio::sync::mpsc::Sender<Result<Vec<B>, PipeError>>,
 }
 
 impl<B: Send + 'static> Emitter<B> {
     /// Emit a single element. Backpressure: awaits if the buffer is full.
     pub async fn emit(&self, item: B) -> Result<(), PipeError> {
         self.tx
-            .send(vec![item])
+            .send(Ok(vec![item]))
             .await
             .map_err(|_| PipeError::Closed)
     }
@@ -36,7 +36,7 @@ impl<B: Send + 'static> Emitter<B> {
     pub async fn emit_all(&self, items: Vec<B>) -> Result<(), PipeError> {
         if !items.is_empty() {
             self.tx
-                .send(items)
+                .send(Ok(items))
                 .await
                 .map_err(|_| PipeError::Closed)?;
         }

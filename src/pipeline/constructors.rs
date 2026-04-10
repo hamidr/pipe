@@ -129,14 +129,15 @@ impl<B: Send + 'static> Pipe<B> {
     {
         let f = Arc::new(f);
         Self::from_factory(move || {
-            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<B>>(2);
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(2);
             let f = Arc::clone(&f);
             let handle = tokio::spawn(async move {
-                let emitter = Emitter { tx };
-                let _ = f(emitter).await;
+                let emitter = Emitter { tx: tx.clone() };
+                if let Err(e) = f(emitter).await {
+                    let _ = tx.send(Err(e)).await;
+                }
             });
-            let receiver = crate::channel::Receiver::from_mpsc(rx);
-            Box::new(receiver.with_abort(handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(rx, handle.abort_handle()))
         })
     }
 
@@ -175,13 +176,14 @@ impl<B: Send + 'static> Pipe<B> {
                 .unwrap()
                 .take()
                 .expect("generate_once: generator already consumed (Pipe was cloned and both materialized)");
-            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<B>>(2);
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(2);
             let handle = tokio::spawn(async move {
-                let emitter = Emitter { tx };
-                let _ = f(emitter).await;
+                let emitter = Emitter { tx: tx.clone() };
+                if let Err(e) = f(emitter).await {
+                    let _ = tx.send(Err(e)).await;
+                }
             });
-            let receiver = crate::channel::Receiver::from_mpsc(rx);
-            Box::new(receiver.with_abort(handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(rx, handle.abort_handle()))
         })
     }
 }
