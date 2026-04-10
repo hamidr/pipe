@@ -221,24 +221,8 @@ fn try_extract_result_ok_type(ret: &ReturnType) -> Option<&Type> {
 }
 
 fn extract_result_ok_type(ret: &ReturnType) -> &Type {
-    let ty = match ret {
-        ReturnType::Type(_, ty) => ty.as_ref(),
-        ReturnType::Default => panic!("#[operator] execute must have a return type"),
-    };
-
-    // Expect Result<B, ...> -- extract B
-    if let Type::Path(type_path) = ty {
-        let last = type_path.path.segments.last().expect("empty return type path");
-        if last.ident == "Result" {
-            if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                if let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first() {
-                    return ok_ty;
-                }
-            }
-        }
-    }
-
-    panic!("#[operator] execute return type must be Result<B, ...>");
+    try_extract_result_ok_type(ret)
+        .expect("#[operator] execute return type must be Result<B, ...> or PipeResult<B>")
 }
 
 fn extract_chunk_element_type(ret: &ReturnType) -> &Type {
