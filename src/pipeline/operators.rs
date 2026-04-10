@@ -298,6 +298,7 @@ impl<B: Send + 'static> Pipe<B> {
 
     /// Group elements into fixed-size chunks, exposing batch boundaries.
     pub fn chunks(self, size: usize) -> Pipe<Vec<B>> {
+        assert!(size > 0, "chunks: size must be > 0");
         let parent = self.factory;
         Pipe::from_factory(move || {
             Box::new(PullChunks {
