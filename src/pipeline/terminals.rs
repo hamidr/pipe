@@ -30,6 +30,27 @@ impl<B: Send + 'static> Pipe<B> {
         fold_all(&mut *root, init, f).await
     }
 
+    /// Reduce all elements using the first element as the initial
+    /// accumulator. Returns `None` for empty streams.
+    pub async fn reduce(self, f: impl Fn(B, B) -> B + Send) -> Result<Option<B>, PipeError> {
+        let mut root = (self.factory)();
+        let first = match root.next_chunk().await? {
+            Some(mut chunk) => {
+                let mut iter = chunk.drain(..);
+                let first = iter.next().unwrap();
+                iter.fold(first, &f)
+            }
+            None => return Ok(None),
+        };
+        let mut acc = first;
+        while let Some(chunk) = root.next_chunk().await? {
+            for item in chunk {
+                acc = f(acc, item);
+            }
+        }
+        Ok(Some(acc))
+    }
+
     /// Count elements.
     pub async fn count(self) -> Result<usize, PipeError> {
         let mut root = (self.factory)();

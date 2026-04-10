@@ -135,6 +135,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reduce_sum() {
+        let sum = Pipe::from_iter(1..=5i64).reduce(|a, b| a + b).await.unwrap();
+        assert_eq!(sum, Some(15));
+    }
+
+    #[tokio::test]
+    async fn reduce_empty() {
+        let result = Pipe::from_iter(Vec::<i64>::new())
+            .reduce(|a, b| a + b)
+            .await
+            .unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn reduce_single() {
+        let result = Pipe::from_iter(vec![42i64]).reduce(|a, b| a + b).await.unwrap();
+        assert_eq!(result, Some(42));
+    }
+
+    #[tokio::test]
     async fn count_elements() {
         let n = Pipe::from_iter(1..=7).count().await.unwrap();
         assert_eq!(n, 7);
