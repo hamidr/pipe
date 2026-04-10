@@ -45,7 +45,7 @@ impl<B: Send + 'static> Pipe<B> {
     pub fn debounce(self, duration: std::time::Duration) -> Self {
         let parent = self.factory;
         Self::from_factory(move || {
-            let (tx, rx) = tokio::sync::mpsc::channel::<B>(1);
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<B, crate::pull::PipeError>>(1);
             let mut root = parent();
 
             let handle = tokio::spawn(async move {
@@ -53,44 +53,50 @@ impl<B: Send + 'static> Pipe<B> {
 
                 loop {
                     if latest.is_some() {
-                        // We have a pending item -- wait for quiet period or new item
                         tokio::select! {
                             biased;
                             result = root.next_chunk() => {
                                 match result {
                                     Ok(Some(chunk)) => {
-                                        // New data -- reset timer, keep latest
                                         latest = chunk.into_iter().last();
                                     }
-                                    Ok(None) | Err(_) => {
-                                        // Source done -- flush latest and exit
+                                    Ok(None) => {
                                         if let Some(item) = latest.take() {
-                                            let _ = tx.send(item).await;
+                                            let _ = tx.send(Ok(item)).await;
                                         }
+                                        return;
+                                    }
+                                    Err(e) => {
+                                        if let Some(item) = latest.take() {
+                                            let _ = tx.send(Ok(item)).await;
+                                        }
+                                        let _ = tx.send(Err(e)).await;
                                         return;
                                     }
                                 }
                             }
                             _ = tokio::time::sleep(duration) => {
-                                // Quiet period elapsed -- emit
                                 if let Some(item) = latest.take() {
-                                    if tx.send(item).await.is_err() { return; }
+                                    if tx.send(Ok(item)).await.is_err() { return; }
                                 }
                             }
                         }
                     } else {
-                        // No pending item -- wait for next chunk
                         match root.next_chunk().await {
                             Ok(Some(chunk)) => {
                                 latest = chunk.into_iter().last();
                             }
-                            Ok(None) | Err(_) => return,
+                            Ok(None) => return,
+                            Err(e) => {
+                                let _ = tx.send(Err(e)).await;
+                                return;
+                            }
                         }
                     }
                 }
             });
 
-            Box::new(crate::channel::TaskReceiver::new(rx, handle.abort_handle()))
+            Box::new(crate::channel::TaskResultReceiver::new(rx, handle.abort_handle()))
         })
     }
 
