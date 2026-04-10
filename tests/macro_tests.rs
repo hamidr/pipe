@@ -241,7 +241,7 @@ async fn triple(x: i64) -> i64 { x * 3 }
 
 #[tokio::test]
 async fn pipe_fn_basic() {
-    let result = pipe![1, 2, 3].pipe(Triple).collect().await.unwrap();
+    let result = pipe![1, 2, 3].eval_map(triple).collect().await.unwrap();
     assert_eq!(result, vec![3, 6, 9]);
 }
 
@@ -251,7 +251,7 @@ async fn add_prefix(s: String) -> String { format!("hello_{s}") }
 #[tokio::test]
 async fn pipe_fn_type_change() {
     let result = pipe!["a".to_string(), "b".to_string()]
-        .pipe(AddPrefix)
+        .eval_map(add_prefix)
         .collect()
         .await
         .unwrap();
@@ -264,15 +264,14 @@ async fn to_upper_case(s: String) -> String { s.to_uppercase() }
 #[tokio::test]
 async fn pipe_fn_chained() {
     let result = pipe!["foo".to_string(), "bar".to_string()]
-        .pipe(ToUpperCase)
-        .pipe(AddPrefix)
+        .eval_map(to_upper_case)
+        .eval_map(add_prefix)
         .collect()
         .await
         .unwrap();
     assert_eq!(result, vec!["hello_FOO", "hello_BAR"]);
 }
 
-// Fallible variant with PipeResult
 #[pipe::pipe_fn]
 async fn parse_int(s: String) -> pipe::PipeResult<i64> {
     Ok(s.parse()?)
@@ -281,7 +280,7 @@ async fn parse_int(s: String) -> pipe::PipeResult<i64> {
 #[tokio::test]
 async fn pipe_fn_fallible() {
     let result = pipe!["1".to_string(), "2".to_string(), "3".to_string()]
-        .pipe(ParseInt)
+        .eval_map(parse_int)
         .collect()
         .await
         .unwrap();
@@ -291,7 +290,7 @@ async fn pipe_fn_fallible() {
 #[tokio::test]
 async fn pipe_fn_fallible_error() {
     let result = pipe!["1".to_string(), "bad".to_string()]
-        .pipe(ParseInt)
+        .eval_map(parse_int)
         .collect()
         .await;
     assert!(result.is_err());

@@ -98,37 +98,31 @@ pub fn pull_operator(_attr: TokenStream, item: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Derive an `Operator<A, B>` from a plain async function.
+/// Normalize an async function to return `PipeResult<B>`.
 ///
-/// Generates a zero-sized struct with the function's name (PascalCase)
-/// and implements `Operator<A, B>` on it. No struct or impl block needed.
-///
-/// The return type can be either a bare value (auto-wrapped in `Ok`) or
-/// an explicit `Result`:
+/// If the function returns a bare type `B`, wraps it in `Ok(...)`.
+/// If it returns `Result<B, ...>` or `PipeResult<B>`, passes through.
+/// Use with `.eval_map(func)` to plug into a pipeline.
 ///
 /// ```ignore
-/// // Simple -- just return the value
+/// // Infallible -- bare return, auto-wrapped in Ok
 /// #[pipe_fn]
 /// async fn double(x: i64) -> i64 { x * 2 }
 ///
-/// // Fallible -- return Result explicitly
+/// // Fallible -- returns PipeResult
 /// #[pipe_fn]
-/// async fn parse(s: String) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
-///     Ok(s.parse()?)
-/// }
+/// async fn parse(s: String) -> PipeResult<i64> { Ok(s.parse()?) }
 ///
-/// let result = pipe![1, 2, 3].pipe(Double).collect().await?;
+/// // Use with eval_map:
+/// pipe![1, 2, 3].eval_map(double).collect().await?;
+/// pipe!["1", "2"].eval_map(parse).collect().await?;
 /// ```
 #[proc_macro_attribute]
 pub fn pipe_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
 
     let fn_name = &func.sig.ident;
-    let struct_name = syn::Ident::new(
-        &to_pascal_case(&fn_name.to_string()),
-        fn_name.span(),
-    );
-
+    let vis = &func.vis;
     let param = func
         .sig
         .inputs
@@ -142,37 +136,36 @@ pub fn pipe_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let body = &func.block;
 
     // Check if return type is Result<B, ...> or a bare type B
-    let (output_type, wrap_ok) = match try_extract_result_ok_type(&func.sig.output) {
-        Some(ty) => (quote! { #ty }, false),
+    match try_extract_result_ok_type(&func.sig.output) {
+        Some(output_type) => {
+            // Already returns Result/PipeResult -- normalize to PipeError
+            let expanded = quote! {
+                #vis async fn #fn_name(#input_name: #input_type)
+                    -> ::std::result::Result<#output_type, pipe::pull::PipeError>
+                {
+                    let __result: ::std::result::Result<#output_type, ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>>
+                        = (|| async move #body)().await;
+                    __result.map_err(|e| pipe::pull::PipeError::from(e))
+                }
+            };
+            TokenStream::from(expanded)
+        }
         None => {
-            let ty = match &func.sig.output {
+            // Bare return type -- wrap in Ok
+            let output_type = match &func.sig.output {
                 ReturnType::Type(_, ty) => ty,
                 ReturnType::Default => panic!("#[pipe_fn] must have a return type"),
             };
-            (quote! { #ty }, true)
+            let expanded = quote! {
+                #vis async fn #fn_name(#input_name: #input_type)
+                    -> ::std::result::Result<#output_type, pipe::pull::PipeError>
+                {
+                    Ok((|| #body)())
+                }
+            };
+            TokenStream::from(expanded)
         }
-    };
-
-    let body_expr = if wrap_ok {
-        quote! { Box::pin(async move { Ok((|| #body)()) }) }
-    } else {
-        quote! { Box::pin(async move #body) }
-    };
-
-    let expanded = quote! {
-        #[derive(Debug)]
-        struct #struct_name;
-
-        impl pipe::operator::Operator<#input_type, #output_type> for #struct_name {
-            fn execute<'__op>(&'__op self, #input_name: #input_type)
-                -> pipe::operator::PinFut<'__op, #output_type>
-            {
-                #body_expr
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
+    }
 }
 
 fn to_pascal_case(s: &str) -> String {
