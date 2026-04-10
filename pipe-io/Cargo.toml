@@ -1,0 +1,11 @@
+[package]
+name = "pipe-io"
+version = "0.2.0"
+edition = "2021"
+description = "I/O constructors for pipe -- TCP, UDP, and file convenience APIs"
+license = "MIT"
+repository = "https://github.com/hamidr/pipe"
+
+[dependencies]
+pipe = { path = ".." }
+tokio = { version = "1", features = ["net", "fs", "io-util", "rt"] }
