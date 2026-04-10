@@ -1,4 +1,4 @@
-//! Concurrency operators: prefetch, merge, broadcast, zip, partition.
+//! Concurrency operators: prefetch, merge, broadcast, zip, partition, par_join.
 
 use std::sync::Arc;
 
@@ -231,5 +231,93 @@ impl<B: Send + 'static> Pipe<B> {
                 })
             })
             .collect()
+    }
+}
+
+impl<B: Send + 'static> Pipe<Pipe<B>> {
+    /// Concurrently drain up to `max_open` inner pipes, merging outputs.
+    ///
+    /// The outer pipe produces inner pipes dynamically (e.g., one per TCP
+    /// connection). Each inner pipe runs on its own task. At most `max_open`
+    /// inner pipes run concurrently -- backpressure stalls the outer pipe
+    /// until a slot opens.
+    ///
+    /// This is the concurrent counterpart of [`flatten`](Pipe::flatten)
+    /// and mirrors FS2's `parJoin(maxOpen)`.
+    ///
+    /// ```ignore
+    /// // Accept TCP connections, handle each as its own pipe
+    /// accept_pipe                      // Pipe<Pipe<String>>
+    ///     .par_join(100)               // Pipe<String>  -- up to 100 concurrent
+    ///     .for_each(|msg| println!("{msg}"))
+    ///     .await?;
+    /// ```
+    pub fn par_join(self, max_open: usize) -> Pipe<B> {
+        let parent = self.factory;
+        let max_open = max_open.max(1);
+        Pipe::from_factory(move || {
+            let (tx, rx) = crate::channel::bounded::<B>(max_open);
+            let mut outer = parent();
+
+            let handle = tokio::spawn(async move {
+                let semaphore = Arc::new(tokio::sync::Semaphore::new(max_open));
+
+                while let Ok(Some(pipes)) = outer.next_chunk().await {
+                    for pipe in pipes {
+                        let permit = match semaphore.clone().acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => return,
+                        };
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            let mut inner = pipe.into_pull();
+                            while let Ok(Some(chunk)) = inner.next_chunk().await {
+                                if tx.send(chunk).await.is_err() {
+                                    break;
+                                }
+                            }
+                            drop(permit);
+                        });
+                    }
+                }
+                // Drop coordinator's tx; channel closes when all sub-tasks finish.
+            });
+
+            Box::new(rx.with_abort(handle.abort_handle()))
+        })
+    }
+
+    /// Concurrently drain all inner pipes without a concurrency limit.
+    ///
+    /// Like [`par_join`](Self::par_join) but spawns every inner pipe
+    /// immediately. Use when the number of inner pipes is bounded by the
+    /// problem (e.g., TCP connections behind a load balancer) rather than
+    /// needing explicit throttling.
+    ///
+    /// Mirrors FS2's `parJoinUnbounded`.
+    pub fn par_join_unbounded(self) -> Pipe<B> {
+        let parent = self.factory;
+        Pipe::from_factory(move || {
+            let (tx, rx) = crate::channel::bounded::<B>(16);
+            let mut outer = parent();
+
+            let handle = tokio::spawn(async move {
+                while let Ok(Some(pipes)) = outer.next_chunk().await {
+                    for pipe in pipes {
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            let mut inner = pipe.into_pull();
+                            while let Ok(Some(chunk)) = inner.next_chunk().await {
+                                if tx.send(chunk).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+
+            Box::new(rx.with_abort(handle.abort_handle()))
+        })
     }
 }

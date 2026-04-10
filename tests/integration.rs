@@ -347,3 +347,94 @@ async fn meter_observes_throughput() {
     assert_eq!(final_stats.elements, 10);
     assert!(final_stats.completed);
 }
+
+/// par_join: merge dynamically produced inner pipes concurrently
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn par_join_merges_concurrent_pipes() {
+    use std::sync::Mutex;
+
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let order2 = order.clone();
+
+    // Outer pipe produces 5 inner pipes, each emitting [i*10, i*10+1, i*10+2]
+    let result = Pipe::from_iter(0..5i64)
+        .map(move |i| {
+            let order = order2.clone();
+            Pipe::from_iter(0..3i64)
+                .map(move |j| i * 10 + j)
+                .tap(move |x| order.lock().unwrap().push(*x))
+        })
+        .par_join(3)
+        .collect()
+        .await
+        .unwrap();
+
+    // All 15 elements should be present
+    let mut sorted = result.clone();
+    sorted.sort();
+    assert_eq!(sorted, vec![0, 1, 2, 10, 11, 12, 20, 21, 22, 30, 31, 32, 40, 41, 42]);
+}
+
+/// par_join_unbounded: all inner pipes run concurrently
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn par_join_unbounded_merges_all() {
+    let result = Pipe::from_iter(0..4i64)
+        .map(|i| Pipe::from_iter(vec![i * 100, i * 100 + 1]))
+        .par_join_unbounded()
+        .collect()
+        .await
+        .unwrap();
+
+    let mut sorted = result;
+    sorted.sort();
+    assert_eq!(sorted, vec![0, 1, 100, 101, 200, 201, 300, 301]);
+}
+
+/// par_join respects concurrency limit
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn par_join_limits_concurrency() {
+    use std::sync::atomic::AtomicUsize;
+
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_seen = Arc::new(AtomicUsize::new(0));
+
+    let active2 = active.clone();
+    let max_seen2 = max_seen.clone();
+
+    let result = Pipe::from_iter(0..10i64)
+        .map(move |i| {
+            let active = active2.clone();
+            let max_seen = max_seen2.clone();
+            pipe::pipe_gen_once!(tx => {
+                let prev = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(prev, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                tx.emit(i).await?;
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            })
+        })
+        .par_join(3)
+        .collect()
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 10);
+    // Concurrency should not exceed 3 (may be less due to timing)
+    assert!(max_seen.load(Ordering::SeqCst) <= 3,
+        "max concurrent was {}, expected <= 3", max_seen.load(Ordering::SeqCst));
+}
+
+/// par_join with cancel token stops cleanly
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn par_join_with_take() {
+    let result = Pipe::from_iter(0..100i64)
+        .map(|i| Pipe::from_iter(vec![i]))
+        .par_join_unbounded()
+        .take(5)
+        .collect()
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 5);
+}

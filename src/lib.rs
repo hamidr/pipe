@@ -101,7 +101,7 @@ macro_rules! pipe_gen {
 #[macro_export]
 macro_rules! pipe_gen_once {
     ($tx:ident => $body:block) => {
-        $crate::pipeline::Pipe::generate_once(|$tx| async move {
+        $crate::pipeline::Pipe::generate_once(move |$tx| async move {
             $body
             #[allow(unreachable_code)]
             Ok(())
