@@ -362,7 +362,8 @@ impl<B: Send + 'static> Pipe<B> {
     /// Alternate elements from two pipes in round-robin order.
     ///
     /// Deterministic, unlike [`merge`](Self::merge) which interleaves
-    /// by arrival time. Stops when either pipe is exhausted.
+    /// by arrival time. When one pipe exhausts, remaining elements
+    /// from the other are drained.
     pub fn interleave(self, other: Pipe<B>) -> Self {
         let left = self.factory;
         let right = other.factory;
