@@ -15,6 +15,14 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
+    /// Delay each element by `duration` before emitting.
+    pub fn delay_by(self, duration: std::time::Duration) -> Self {
+        self.eval_map(move |x| async move {
+            tokio::time::sleep(duration).await;
+            Ok(x)
+        })
+    }
+
     /// Emit at most one element per `duration`.
     ///
     /// Elements arriving faster than the rate are delayed, not dropped.

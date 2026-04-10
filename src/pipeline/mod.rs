@@ -1177,6 +1177,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delay_by_delays_elements() {
+        let start = tokio::time::Instant::now();
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .delay_by(std::time::Duration::from_millis(10))
+            .collect()
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(result, vec![1, 2, 3]);
+        assert!(elapsed >= std::time::Duration::from_millis(30));
+    }
+
+    #[tokio::test]
     async fn throttle_limits_rate() {
         let start = tokio::time::Instant::now();
         let result = Pipe::from_iter(vec![1, 2, 3])
