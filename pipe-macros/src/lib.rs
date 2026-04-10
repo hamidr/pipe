@@ -208,7 +208,8 @@ fn try_extract_result_ok_type(ret: &ReturnType) -> Option<&Type> {
     };
     if let Type::Path(type_path) = ty {
         let last = type_path.path.segments.last()?;
-        if last.ident == "Result" {
+        // Match Result<T, ...> or PipeResult<T>
+        if last.ident == "Result" || last.ident == "PipeResult" {
             if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
                 if let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first() {
                     return Some(ok_ty);

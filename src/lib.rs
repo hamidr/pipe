@@ -50,6 +50,7 @@ pub mod topic;
 pub mod transform;
 
 pub use pipe_macros::{operator, pipe_fn, pull_operator};
+pub use operator::{PipeErr, PipeResult};
 
 /// Construct a `Pipe` from literal elements.
 ///

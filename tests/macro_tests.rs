@@ -272,9 +272,9 @@ async fn pipe_fn_chained() {
     assert_eq!(result, vec!["hello_FOO", "hello_BAR"]);
 }
 
-// Fallible variant still works
+// Fallible variant with PipeResult
 #[pipe::pipe_fn]
-async fn parse_int(s: String) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+async fn parse_int(s: String) -> pipe::PipeResult<i64> {
     Ok(s.parse()?)
 }
 

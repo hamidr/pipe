@@ -4,9 +4,14 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 
+/// The standard error type for pipe operators.
+pub type PipeErr = Box<dyn std::error::Error + Send + Sync>;
+
+/// Convenience alias for fallible operator results.
+pub type PipeResult<T> = Result<T, PipeErr>;
+
 /// Convenience type alias for boxed futures.
-pub type PinFut<'a, B> =
-    Pin<Box<dyn Future<Output = Result<B, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>>;
+pub type PinFut<'a, B> = Pin<Box<dyn Future<Output = PipeResult<B>> + Send + 'a>>;
 
 /// A per-element operator that transforms `A` into `B` asynchronously.
 ///
