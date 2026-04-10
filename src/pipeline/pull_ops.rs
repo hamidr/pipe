@@ -538,18 +538,30 @@ impl<B: Send + 'static> PullOperator<B> for GuardedPull<B> {
     }
 }
 
-/// Receives `Arc<Vec<B>>` chunks from broadcast and clones elements on pull.
-pub(super) struct BroadcastReceiver<B> {
-    pub(super) rx: tokio::sync::mpsc::Receiver<std::sync::Arc<Vec<B>>>,
-    pub(super) abort: Option<tokio::task::AbortHandle>,
+/// Aborts the background task only when the last clone is dropped.
+pub(super) struct SharedAbort {
+    handle: tokio::task::AbortHandle,
 }
 
-impl<B> Drop for BroadcastReceiver<B> {
+impl Drop for SharedAbort {
     fn drop(&mut self) {
-        if let Some(handle) = self.abort.take() {
-            handle.abort();
-        }
+        self.handle.abort();
     }
+}
+
+impl SharedAbort {
+    pub(super) fn new(handle: tokio::task::AbortHandle) -> Arc<Self> {
+        Arc::new(Self { handle })
+    }
+}
+
+/// Receives `Arc<Vec<B>>` chunks from broadcast and clones elements on pull.
+///
+/// Holds a ref-counted abort guard so the source task is only cancelled
+/// when ALL branches are dropped.
+pub(super) struct BroadcastReceiver<B> {
+    pub(super) rx: tokio::sync::mpsc::Receiver<std::sync::Arc<Vec<B>>>,
+    pub(super) _abort: Arc<SharedAbort>,
 }
 
 impl<B: Clone + Send + Sync + 'static> PullOperator<B> for BroadcastReceiver<B> {

@@ -10,7 +10,36 @@
 use std::path::{Path, PathBuf};
 
 use pipe::pipeline::Pipe;
+use pipe::pull::{ChunkFut, PipeError, PullOperator};
 use tokio::io::AsyncReadExt;
+
+/// Lazy file reader that opens the file on first pull.
+struct LazyFileReader {
+    path: PathBuf,
+    buf_size: usize,
+    file: Option<tokio::fs::File>,
+    buf: Vec<u8>,
+    opened: bool,
+}
+
+impl PullOperator<Vec<u8>> for LazyFileReader {
+    fn next_chunk(&mut self) -> ChunkFut<'_, Vec<u8>> {
+        Box::pin(async move {
+            if !self.opened {
+                self.file = Some(tokio::fs::File::open(&self.path).await?);
+                self.buf = vec![0u8; self.buf_size];
+                self.opened = true;
+            }
+            let file = self.file.as_mut().unwrap();
+            let n = file.read(&mut self.buf).await?;
+            if n == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(vec![self.buf[..n].to_vec()]))
+            }
+        })
+    }
+}
 
 /// Read a file as a stream of byte chunks.
 ///
@@ -24,17 +53,12 @@ pub fn read(path: impl AsRef<Path>) -> Pipe<Vec<u8>> {
 /// Read a file with a custom buffer size.
 pub fn read_sized(path: impl Into<PathBuf>, buf_size: usize) -> Pipe<Vec<u8>> {
     let path = path.into();
-    Pipe::generate_once(move |tx| async move {
-        let mut file = tokio::fs::File::open(&path).await?;
-        let mut buf = vec![0u8; buf_size];
-        loop {
-            let n = file.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            tx.emit(buf[..n].to_vec()).await?;
-        }
-        Ok(())
+    Pipe::from_pull_once(LazyFileReader {
+        path,
+        buf_size,
+        file: None,
+        buf: Vec::new(),
+        opened: false,
     })
 }
 
@@ -76,6 +100,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, vec!["HELLO", "WORLD"]);
+    }
+
+    #[tokio::test]
+    async fn read_nonexistent_file_errors() {
+        let result = read("/tmp/pipe-io-no-such-file-12345.txt")
+            .collect()
+            .await;
+        assert!(result.is_err());
     }
 
     fn tempfile(name: &str, content: &[u8]) -> PathBuf {

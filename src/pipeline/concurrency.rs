@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::pull::{PipeError, PullOperator, PullZip};
 
-use super::pull_ops::{BroadcastReceiver, GuardedPull, LazyFanOut, LazyPartition};
+use super::pull_ops::{BroadcastReceiver, GuardedPull, LazyFanOut, LazyPartition, SharedAbort};
 use super::Pipe;
 
 impl<B: Send + 'static> Pipe<B> {
@@ -101,10 +101,8 @@ impl<B: Send + 'static> Pipe<B> {
                 let shared = Arc::clone(&shared);
                 Pipe::from_factory(move || {
                     let rx = shared.take_broadcast_receiver(idx);
-                    Box::new(BroadcastReceiver {
-                        rx,
-                        abort: Some(shared.abort_handle()),
-                    })
+                    let abort = SharedAbort::new(shared.abort_handle());
+                    Box::new(BroadcastReceiver { rx, _abort: abort })
                 })
             })
             .collect()

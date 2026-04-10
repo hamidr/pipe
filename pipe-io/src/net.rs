@@ -72,7 +72,10 @@ impl TcpConnection {
 
 /// Cloneable write handle for a TCP connection.
 ///
-/// Safe to share across `eval_map` closures and async tasks.
+/// Each `write_all` call is individually atomic (mutex-protected),
+/// but sequences of calls can interleave with other writers. For
+/// multi-part messages, build the full message first and send it
+/// in a single `write_all`.
 #[derive(Clone)]
 pub struct TcpWriter(Arc<Mutex<OwnedWriteHalf>>);
 
