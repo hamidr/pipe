@@ -845,8 +845,8 @@ mod tests {
 
         let result = Pipe::bracket(
             || Box::pin(async { Ok(vec![1i64, 2, 3]) }),
-            |data| Pipe::from_iter(data),
-            move || released2.store(true, Ordering::SeqCst),
+            |data| Pipe::from_iter((*data).clone()),
+            move |_| released2.store(true, Ordering::SeqCst),
         )
         .collect()
         .await
@@ -871,7 +871,7 @@ mod tests {
                         if x == 2 { Err("boom".into()) } else { Ok(x) }
                     })
             },
-            move || released2.store(true, Ordering::SeqCst),
+            move |_| released2.store(true, Ordering::SeqCst),
         )
         .collect()
         .await;
@@ -887,11 +887,10 @@ mod tests {
         let released = Arc::new(AtomicBool::new(false));
         let released2 = released.clone();
 
-        // Create a bracket pipe but only take 1 element, then drop
         let result = Pipe::bracket(
             || Box::pin(async { Ok(vec![10i64, 20, 30]) }),
-            |data| Pipe::from_iter(data),
-            move || released2.store(true, Ordering::SeqCst),
+            |data| Pipe::from_iter((*data).clone()),
+            move |_| released2.store(true, Ordering::SeqCst),
         )
         .take(1)
         .first()

@@ -8,7 +8,7 @@ use crate::pull::{ChunkFut, PipeError, PullOperator, YIELD_AFTER_EMPTY};
 
 use super::Pipe;
 
-pub(super) enum BracketState<B: Send + 'static, R: Send + 'static> {
+pub(super) enum BracketState<B: Send + 'static, R: Send + Sync + 'static> {
     Pending {
         acquire: Arc<
             dyn Fn() -> std::pin::Pin<
@@ -16,27 +16,26 @@ pub(super) enum BracketState<B: Send + 'static, R: Send + 'static> {
                 > + Send
                 + Sync,
         >,
-        use_resource: Arc<dyn Fn(R) -> Pipe<B> + Send + Sync>,
-        release: Arc<dyn Fn() + Send + Sync>,
+        use_resource: Arc<dyn Fn(Arc<R>) -> Pipe<B> + Send + Sync>,
+        release: Arc<dyn Fn(Arc<R>) + Send + Sync>,
     },
     Active {
         inner: Box<dyn PullOperator<B>>,
-        release: Arc<dyn Fn() + Send + Sync>,
+        resource: Arc<R>,
+        release: Arc<dyn Fn(Arc<R>) + Send + Sync>,
     },
     Done,
 }
 
-pub(super) struct PullBracket<B: Send + 'static, R: Send + 'static> {
+pub(super) struct PullBracket<B: Send + 'static, R: Send + Sync + 'static> {
     pub(super) state: BracketState<B, R>,
 }
 
-impl<B: Send + 'static, R: Send + 'static> Drop for PullBracket<B, R> {
+impl<B: Send + 'static, R: Send + Sync + 'static> Drop for PullBracket<B, R> {
     fn drop(&mut self) {
         let old = std::mem::replace(&mut self.state, BracketState::Done);
-        if let BracketState::Active { release, .. } = old {
-            release();
-        } else if let BracketState::Pending { release, .. } = old {
-            let _ = release;
+        if let BracketState::Active { release, resource, .. } = old {
+            release(resource);
         }
     }
 }
@@ -44,7 +43,6 @@ impl<B: Send + 'static, R: Send + 'static> Drop for PullBracket<B, R> {
 impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracket<B, R> {
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
         Box::pin(async move {
-            // Lazy acquisition: acquire on first pull
             if let BracketState::Pending { .. } = &self.state {
                 let old = std::mem::replace(&mut self.state, BracketState::Done);
                 if let BracketState::Pending {
@@ -53,26 +51,28 @@ impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracke
                     release,
                 } = old
                 {
-                    let resource = acquire().await?;
-                    let pipe = use_resource(resource);
+                    let resource = Arc::new(acquire().await?);
+                    let pipe = use_resource(Arc::clone(&resource));
                     let inner = pipe.into_pull();
-                    self.state = BracketState::Active { inner, release };
+                    self.state = BracketState::Active { inner, resource, release };
                 }
             }
 
             match &mut self.state {
-                BracketState::Active { inner, release } => match inner.next_chunk().await {
+                BracketState::Active { inner, resource, release } => match inner.next_chunk().await {
                     Ok(Some(chunk)) => Ok(Some(chunk)),
                     Ok(None) => {
                         let release = Arc::clone(release);
+                        let resource = Arc::clone(resource);
                         self.state = BracketState::Done;
-                        release();
+                        release(resource);
                         Ok(None)
                     }
                     Err(e) => {
                         let release = Arc::clone(release);
+                        let resource = Arc::clone(resource);
                         self.state = BracketState::Done;
-                        release();
+                        release(resource);
                         Err(e)
                     }
                 },

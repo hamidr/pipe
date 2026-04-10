@@ -280,11 +280,11 @@ async fn bracket_resource_lifecycle() {
             })
         },
         |data| {
-            Pipe::from_iter(data)
+            Pipe::from_iter((*data).clone())
                 .filter(|x| x % 2 != 0)
                 .map(|x| x * 100)
         },
-        move || rel.store(true, Ordering::SeqCst),
+        move |_| rel.store(true, Ordering::SeqCst),
     )
     .collect()
     .await

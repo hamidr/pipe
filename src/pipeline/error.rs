@@ -20,8 +20,8 @@ impl<B: Send + 'static> Pipe<B> {
     /// ```ignore
     /// Pipe::bracket(
     ///     || Box::pin(async { Ok(File::open("data.txt").await?) }),
-    ///     |file| Pipe::from_reader(file),
-    ///     |_file| { /* cleanup */ },
+    ///     |file| Pipe::from_reader(Arc::try_unwrap(file).unwrap()),
+    ///     |file| drop(file),
     /// )
     /// ```
     pub fn bracket<R: Send + Sync + 'static>(
@@ -29,8 +29,8 @@ impl<B: Send + 'static> Pipe<B> {
             + Send
             + Sync
             + 'static,
-        use_resource: impl Fn(R) -> Pipe<B> + Send + Sync + 'static,
-        release: impl Fn() + Send + Sync + 'static,
+        use_resource: impl Fn(Arc<R>) -> Pipe<B> + Send + Sync + 'static,
+        release: impl Fn(Arc<R>) + Send + Sync + 'static,
     ) -> Self {
         let acquire = Arc::new(acquire);
         let use_resource = Arc::new(use_resource);
