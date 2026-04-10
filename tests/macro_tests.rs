@@ -237,9 +237,7 @@ async fn eval_for_each_with_async_io() {
 }
 
 #[pipe::pipe_fn]
-async fn triple(x: i64) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(x * 3)
-}
+async fn triple(x: i64) -> i64 { x * 3 }
 
 #[tokio::test]
 async fn pipe_fn_basic() {
@@ -248,9 +246,7 @@ async fn pipe_fn_basic() {
 }
 
 #[pipe::pipe_fn]
-async fn add_prefix(s: String) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(format!("hello_{s}"))
-}
+async fn add_prefix(s: String) -> String { format!("hello_{s}") }
 
 #[tokio::test]
 async fn pipe_fn_type_change() {
@@ -263,9 +259,7 @@ async fn pipe_fn_type_change() {
 }
 
 #[pipe::pipe_fn]
-async fn to_upper_case(s: String) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(s.to_uppercase())
-}
+async fn to_upper_case(s: String) -> String { s.to_uppercase() }
 
 #[tokio::test]
 async fn pipe_fn_chained() {
@@ -276,4 +270,29 @@ async fn pipe_fn_chained() {
         .await
         .unwrap();
     assert_eq!(result, vec!["hello_FOO", "hello_BAR"]);
+}
+
+// Fallible variant still works
+#[pipe::pipe_fn]
+async fn parse_int(s: String) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(s.parse()?)
+}
+
+#[tokio::test]
+async fn pipe_fn_fallible() {
+    let result = pipe!["1".to_string(), "2".to_string(), "3".to_string()]
+        .pipe(ParseInt)
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(result, vec![1, 2, 3]);
+}
+
+#[tokio::test]
+async fn pipe_fn_fallible_error() {
+    let result = pipe!["1".to_string(), "bad".to_string()]
+        .pipe(ParseInt)
+        .collect()
+        .await;
+    assert!(result.is_err());
 }

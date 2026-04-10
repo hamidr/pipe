@@ -103,13 +103,20 @@ pub fn pull_operator(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Generates a zero-sized struct with the function's name (PascalCase)
 /// and implements `Operator<A, B>` on it. No struct or impl block needed.
 ///
+/// The return type can be either a bare value (auto-wrapped in `Ok`) or
+/// an explicit `Result`:
+///
 /// ```ignore
+/// // Simple -- just return the value
 /// #[pipe_fn]
-/// async fn double(x: i64) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
-///     Ok(x * 2)
+/// async fn double(x: i64) -> i64 { x * 2 }
+///
+/// // Fallible -- return Result explicitly
+/// #[pipe_fn]
+/// async fn parse(s: String) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+///     Ok(s.parse()?)
 /// }
 ///
-/// // Generates: struct Double; impl Operator<i64, i64> for Double { ... }
 /// let result = pipe![1, 2, 3].pipe(Double).collect().await?;
 /// ```
 #[proc_macro_attribute]
@@ -132,8 +139,25 @@ pub fn pipe_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => panic!("#[pipe_fn] parameter must be typed"),
     };
 
-    let output_type = extract_result_ok_type(&func.sig.output);
     let body = &func.block;
+
+    // Check if return type is Result<B, ...> or a bare type B
+    let (output_type, wrap_ok) = match try_extract_result_ok_type(&func.sig.output) {
+        Some(ty) => (quote! { #ty }, false),
+        None => {
+            let ty = match &func.sig.output {
+                ReturnType::Type(_, ty) => ty,
+                ReturnType::Default => panic!("#[pipe_fn] must have a return type"),
+            };
+            (quote! { #ty }, true)
+        }
+    };
+
+    let body_expr = if wrap_ok {
+        quote! { Box::pin(async move { Ok((|| #body)()) }) }
+    } else {
+        quote! { Box::pin(async move #body) }
+    };
 
     let expanded = quote! {
         #[derive(Debug)]
@@ -143,7 +167,7 @@ pub fn pipe_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
             fn execute<'__op>(&'__op self, #input_name: #input_type)
                 -> pipe::operator::PinFut<'__op, #output_type>
             {
-                Box::pin(async move #body)
+                #body_expr
             }
         }
     };
@@ -175,6 +199,24 @@ fn extract_second_param(sig: &syn::Signature) -> (&Type, &Pat) {
         FnArg::Typed(pat_type) => (&pat_type.ty, &pat_type.pat),
         _ => panic!("#[operator] execute second parameter must be typed"),
     }
+}
+
+fn try_extract_result_ok_type(ret: &ReturnType) -> Option<&Type> {
+    let ty = match ret {
+        ReturnType::Type(_, ty) => ty.as_ref(),
+        ReturnType::Default => return None,
+    };
+    if let Type::Path(type_path) = ty {
+        let last = type_path.path.segments.last()?;
+        if last.ident == "Result" {
+            if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
+                if let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first() {
+                    return Some(ok_ty);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn extract_result_ok_type(ret: &ReturnType) -> &Type {
