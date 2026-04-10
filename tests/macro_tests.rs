@@ -1,5 +1,5 @@
 use pipe::prelude::*;
-use pipe::{pipe, pipe_gen};
+use pipe::{pipe, pipe_gen, pipe_gen_once};
 
 #[tokio::test]
 async fn pipe_macro_basic() {
@@ -152,4 +152,86 @@ async fn pull_operator_macro_with_pipe_ops() {
         .await
         .unwrap();
     assert_eq!(result, vec![100, 300, 500]);
+}
+
+#[tokio::test]
+async fn pipe_gen_once_basic() {
+    let owned_data = vec![10, 20, 30];
+    let result = pipe_gen_once!(tx => {
+        for item in owned_data {
+            tx.emit(item).await?;
+        }
+    })
+    .collect()
+    .await
+    .unwrap();
+    assert_eq!(result, vec![10, 20, 30]);
+}
+
+#[tokio::test]
+async fn pipe_gen_once_with_operators() {
+    let owned_data = vec![1, 2, 3, 4, 5];
+    let result = pipe_gen_once!(tx => {
+        for item in owned_data {
+            tx.emit(item).await?;
+        }
+    })
+    .filter(|x| x % 2 != 0)
+    .map(|x| x * 100)
+    .collect()
+    .await
+    .unwrap();
+    assert_eq!(result, vec![100, 300, 500]);
+}
+
+#[tokio::test]
+#[should_panic(expected = "generate_once: generator already consumed")]
+async fn pipe_gen_once_panics_on_double_materialize() {
+    let owned_data = vec![1, 2, 3];
+    let pipe = pipe_gen_once!(tx => {
+        for item in owned_data {
+            tx.emit(item).await?;
+        }
+    });
+    let clone = pipe.clone();
+    let _ = pipe.collect().await;
+    let _ = clone.collect().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn eval_for_each_basic() {
+    use std::sync::{Arc, Mutex};
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    pipe![1, 2, 3]
+        .eval_for_each(move |x| {
+            let seen = seen2.clone();
+            async move {
+                seen.lock().unwrap().push(x);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![1, 2, 3]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn eval_for_each_with_async_io() {
+    use std::sync::{Arc, Mutex};
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let results2 = results.clone();
+    pipe![10, 20, 30]
+        .map(|x| x + 1)
+        .eval_for_each(move |x| {
+            let results = results2.clone();
+            async move {
+                tokio::task::yield_now().await;
+                results.lock().unwrap().push(x);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(*results.lock().unwrap(), vec![11, 21, 31]);
 }

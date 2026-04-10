@@ -51,6 +51,20 @@ impl<B: Send + 'static> Pipe<B> {
         Ok(())
     }
 
+    /// Run an async side-effect for each element, discarding the values.
+    pub async fn eval_for_each<Fut: std::future::Future<Output = Result<(), PipeError>> + Send>(
+        self,
+        f: impl Fn(B) -> Fut + Send,
+    ) -> Result<(), PipeError> {
+        let mut root = (self.factory)();
+        while let Some(chunk) = root.next_chunk().await? {
+            for item in chunk {
+                f(item).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Return the first element, or `None` if empty.
     pub async fn first(self) -> Result<Option<B>, PipeError> {
         let mut root = (self.factory)();

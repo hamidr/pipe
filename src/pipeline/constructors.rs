@@ -139,6 +139,51 @@ impl<B: Send + 'static> Pipe<B> {
             Box::new(receiver.with_abort(handle.abort_handle()))
         })
     }
+
+    /// Like [`generate`](Self::generate) but takes a `FnOnce` closure,
+    /// allowing owned (non-cloneable) resources to be moved in.
+    ///
+    /// The resulting pipe can be cloned, but only one clone may be
+    /// materialized. Panics if a second clone tries to execute.
+    ///
+    /// ```ignore
+    /// let listener = TcpListener::bind("0.0.0.0:8080").await?;
+    /// let pipe = Pipe::generate_once(|tx| async move {
+    ///     loop {
+    ///         let (stream, _) = listener.accept().await?;
+    ///         tx.emit(stream).await?;
+    ///     }
+    /// });
+    /// ```
+    pub fn generate_once<Fut>(
+        f: impl FnOnce(Emitter<B>) -> Fut + Send + 'static,
+    ) -> Self
+    where
+        Fut: Future<Output = Result<(), PipeError>> + Send + 'static,
+    {
+        type BoxedGen<B> = Box<
+            dyn FnOnce(Emitter<B>) -> std::pin::Pin<
+                Box<dyn Future<Output = Result<(), PipeError>> + Send>,
+            > + Send,
+        >;
+        let slot: Arc<std::sync::Mutex<Option<BoxedGen<B>>>> =
+            Arc::new(std::sync::Mutex::new(Some(
+                Box::new(move |emitter| Box::pin(f(emitter))),
+            )));
+        Self::from_factory(move || {
+            let f = slot.lock()
+                .unwrap()
+                .take()
+                .expect("generate_once: generator already consumed (Pipe was cloned and both materialized)");
+            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<B>>(2);
+            let handle = tokio::spawn(async move {
+                let emitter = Emitter { tx };
+                let _ = f(emitter).await;
+            });
+            let receiver = crate::channel::Receiver::from_mpsc(rx);
+            Box::new(receiver.with_abort(handle.abort_handle()))
+        })
+    }
 }
 
 impl Pipe<tokio::time::Instant> {

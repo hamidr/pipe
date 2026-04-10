@@ -84,6 +84,31 @@ macro_rules! pipe_gen {
     };
 }
 
+/// Like [`pipe_gen!`] but for single-use sources that capture owned resources.
+///
+/// Uses [`Pipe::generate_once`] under the hood -- the resulting pipe can be
+/// cloned, but only one clone may be materialized.
+///
+/// ```ignore
+/// let listener = TcpListener::bind("0.0.0.0:8080").await?;
+/// let p = pipe_gen_once!(tx => {
+///     loop {
+///         let (stream, _) = listener.accept().await?;
+///         tx.emit(stream).await?;
+///     }
+/// });
+/// ```
+#[macro_export]
+macro_rules! pipe_gen_once {
+    ($tx:ident => $body:block) => {
+        $crate::pipeline::Pipe::generate_once(|$tx| async move {
+            $body
+            #[allow(unreachable_code)]
+            Ok(())
+        })
+    };
+}
+
 pub mod prelude {
     //! Re-exports for convenience.
     pub use crate::cancel::CancelToken;
