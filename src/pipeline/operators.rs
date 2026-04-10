@@ -326,6 +326,22 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
+    /// Emit only when the value differs from the previous one.
+    ///
+    /// Uses `PartialEq` to compare consecutive elements. The first
+    /// element is always emitted.
+    pub fn changes(self) -> Self
+    where
+        B: PartialEq + Clone + Sync,
+    {
+        self.scan(None::<B>, |prev, item| {
+            let emit = prev.as_ref() != Some(&item);
+            *prev = Some(item.clone());
+            if emit { Some(item) } else { None }
+        })
+        .and_then(|x| x)
+    }
+
     /// Pair each element with its index: `(0, a), (1, b), (2, c), ...`
     pub fn enumerate(self) -> Pipe<(usize, B)> {
         self.scan(0usize, |idx, item| {

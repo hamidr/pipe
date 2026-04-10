@@ -1138,6 +1138,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn changes_deduplicates_consecutive() {
+        let result = Pipe::from_iter(vec![1, 1, 2, 2, 2, 3, 1, 1])
+            .changes()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3, 1]);
+    }
+
+    #[tokio::test]
+    async fn changes_all_same() {
+        let result = Pipe::from_iter(vec![5, 5, 5])
+            .changes()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![5]);
+    }
+
+    #[tokio::test]
+    async fn changes_all_different() {
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .changes()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
     async fn intersperse_inserts_separator() {
         let result = Pipe::from_iter(vec![1, 2, 3])
             .intersperse(0)
