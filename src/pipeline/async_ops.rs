@@ -97,13 +97,16 @@ impl<B: Send + 'static> Pipe<B> {
                         match root.next_chunk().await {
                             Ok(Some(chunk)) => {
                                 for item in chunk {
+                                    let permit = match semaphore.clone().acquire_owned().await {
+                                        Ok(p) => p,
+                                        Err(_) => return,
+                                    };
                                     let (tx, rx) = tokio::sync::oneshot::channel();
                                     let f = Arc::clone(&f);
-                                    let sem = Arc::clone(&semaphore);
                                     tokio::spawn(async move {
-                                        let _permit = sem.acquire().await;
                                         let result = f(item).await;
                                         let _ = tx.send(result);
+                                        drop(permit);
                                     });
                                     pending.push_back(rx);
                                 }
@@ -132,7 +135,6 @@ impl<B: Send + 'static> Pipe<B> {
                                 }
                             }
                             Err(_) => {
-                                // Worker dropped -- shouldn't happen
                                 pending.pop_front();
                                 let _ = out_tx
                                     .send(Err(PipeError::Custom("worker dropped".into())))
