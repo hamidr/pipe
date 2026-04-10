@@ -379,6 +379,30 @@ impl<B: Send + 'static> Pipe<B> {
         .and_then(|x| x)
     }
 
+    /// Group consecutive elements that share the same key.
+    ///
+    /// Emits `(key, Vec<B>)` for each run of elements with equal keys.
+    pub fn group_adjacent_by<K: PartialEq + Send + 'static>(
+        self,
+        key: impl Fn(&B) -> K + Send + Sync + 'static,
+    ) -> Pipe<(K, Vec<B>)> {
+        let parent = self.factory;
+        let key = Arc::new(key);
+        Pipe::from_factory(move || {
+            let child = parent();
+            let key = Arc::clone(&key);
+            let key = Arc::clone(&key);
+            Box::new(super::pull_ops::PullGroupAdjacentBy {
+                child,
+                key_fn: Box::new(move |b: &B| key(b)),
+                current_key: None,
+                current_group: Vec::new(),
+                pending: std::collections::VecDeque::new(),
+                done: false,
+            })
+        })
+    }
+
     /// Pair each element with its index: `(0, a), (1, b), (2, c), ...`
     pub fn enumerate(self) -> Pipe<(usize, B)> {
         self.scan(0usize, |idx, item| {

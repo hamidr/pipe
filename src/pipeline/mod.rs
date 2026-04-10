@@ -1187,6 +1187,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn group_adjacent_by_groups_runs() {
+        let result = Pipe::from_iter(vec![1, 1, 2, 2, 2, 3, 1, 1])
+            .group_adjacent_by(|x| *x)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![(1, vec![1, 1]), (2, vec![2, 2, 2]), (3, vec![3]), (1, vec![1, 1])]
+        );
+    }
+
+    #[tokio::test]
+    async fn group_adjacent_by_single_group() {
+        let result = Pipe::from_iter(vec![5, 5, 5])
+            .group_adjacent_by(|x| *x)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![(5, vec![5, 5, 5])]);
+    }
+
+    #[tokio::test]
+    async fn group_adjacent_by_custom_key() {
+        let result = Pipe::from_iter(vec![1, 3, 2, 4, 5])
+            .group_adjacent_by(|x| x % 2)
+            .map(|(k, vs)| (k, vs.len()))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![(1, 2), (0, 2), (1, 1)]);
+    }
+
+    #[tokio::test]
     async fn distinct_removes_all_duplicates() {
         let result = Pipe::from_iter(vec![1, 2, 3, 2, 1, 4, 3])
             .distinct()

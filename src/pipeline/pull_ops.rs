@@ -518,6 +518,68 @@ impl<B: Send + 'static> LazyPartition<B> {
     }
 }
 
+/// Groups consecutive elements with the same key.
+pub(super) struct PullGroupAdjacentBy<B: Send + 'static, K> {
+    pub(super) child: Box<dyn PullOperator<B>>,
+    pub(super) key_fn: Box<dyn Fn(&B) -> K + Send + Sync>,
+    pub(super) current_key: Option<K>,
+    pub(super) current_group: Vec<B>,
+    pub(super) pending: VecDeque<B>,
+    pub(super) done: bool,
+}
+
+impl<B, K> PullOperator<(K, Vec<B>)> for PullGroupAdjacentBy<B, K>
+where
+    B: Send + 'static,
+    K: PartialEq + Send + 'static,
+{
+    fn next_chunk(&mut self) -> ChunkFut<'_, (K, Vec<B>)> {
+        Box::pin(async {
+            loop {
+                // Process pending items first
+                if let Some(item) = self.pending.pop_front() {
+                    let k = (self.key_fn)(&item);
+                    match &self.current_key {
+                        Some(ck) if *ck == k => {
+                            self.current_group.push(item);
+                        }
+                        Some(_) => {
+                            let group = std::mem::take(&mut self.current_group);
+                            let prev_key = self.current_key.take().unwrap();
+                            self.current_key = Some(k);
+                            self.current_group.push(item);
+                            return Ok(Some(vec![(prev_key, group)]));
+                        }
+                        None => {
+                            self.current_key = Some(k);
+                            self.current_group.push(item);
+                        }
+                    }
+                    continue;
+                }
+
+                if self.done {
+                    if self.current_group.is_empty() {
+                        return Ok(None);
+                    }
+                    let group = std::mem::take(&mut self.current_group);
+                    let key = self.current_key.take().unwrap();
+                    return Ok(Some(vec![(key, group)]));
+                }
+
+                match self.child.next_chunk().await? {
+                    Some(chunk) => {
+                        self.pending.extend(chunk);
+                    }
+                    None => {
+                        self.done = true;
+                    }
+                }
+            }
+        })
+    }
+}
+
 /// Runs a finalizer when the inner pipe completes, errors, or is dropped.
 pub(super) struct PullOnFinalize<B: Send + 'static> {
     pub(super) child: Box<dyn PullOperator<B>>,
