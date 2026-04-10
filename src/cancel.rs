@@ -1,7 +1,7 @@
 //! Cooperative cancellation for pipes.
 //!
 //! A [`CancelToken`] signals a pipe to stop producing elements
-//! gracefully — in-flight data drains instead of being aborted.
+//! gracefully -- in-flight data drains instead of being aborted.
 //!
 //! ```ignore
 //! let token = CancelToken::new();
@@ -10,7 +10,7 @@
 //!     .prefetch(4)
 //!     .map(|x| x * 2);
 //!
-//! // Later: signal shutdown — source stops, pipeline drains
+//! // Later: signal shutdown -- source stops, pipeline drains
 //! token.cancel();
 //! ```
 

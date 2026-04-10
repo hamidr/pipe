@@ -121,7 +121,7 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
-    /// Alias for [`tap`](Self::tap) — follows Rust iterator convention.
+    /// Alias for [`tap`](Self::tap) -- follows Rust iterator convention.
     pub fn inspect(self, f: impl Fn(&B) + Send + Sync + 'static) -> Self {
         self.tap(f)
     }
@@ -307,7 +307,7 @@ impl<B: Send + 'static> Pipe<B> {
 
     /// Insert a separator between every two elements.
     ///
-    /// `[1, 2, 3].intersperse(0)` → `[1, 0, 2, 0, 3]`
+    /// `[1, 2, 3].intersperse(0)` -> `[1, 0, 2, 0, 3]`
     pub fn intersperse(self, separator: B) -> Self
     where
         B: Clone + Sync,

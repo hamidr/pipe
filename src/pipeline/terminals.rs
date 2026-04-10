@@ -98,7 +98,7 @@ impl<B: Send + 'static> Pipe<Pipe<B>> {
 
 /// Split a `Pipe<(A, B)>` into two pipes via broadcast.
 ///
-/// Uses `broadcast(2)` internally — the source is shared.
+/// Uses `broadcast(2)` internally -- the source is shared.
 /// Both pipes must be consumed; dropping one stalls the other.
 impl<A: Clone + Send + Sync + 'static, B: Clone + Send + Sync + 'static> Pipe<(A, B)> {
     pub fn unzip(self, buffer_size: usize) -> (Pipe<A>, Pipe<B>) {

@@ -1,4 +1,4 @@
-//! Core operator trait — per-element, async, type-changing.
+//! Core operator trait -- per-element, async, type-changing.
 
 use std::fmt;
 use std::future::Future;

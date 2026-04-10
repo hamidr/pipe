@@ -132,7 +132,7 @@ impl<B: Send + 'static> Pipe<B> {
                                 }
                             }
                             Err(_) => {
-                                // Worker dropped — shouldn't happen
+                                // Worker dropped -- shouldn't happen
                                 pending.pop_front();
                                 let _ = out_tx
                                     .send(Err(PipeError::Custom("worker dropped".into())))

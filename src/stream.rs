@@ -39,7 +39,7 @@ impl<B: Send + 'static> PullOperator<B> for PullFromStream<B> {
 impl<B: Send + 'static> Pipe<B> {
     /// Create a pipe from any [`Stream`](futures_core::Stream).
     ///
-    /// The resulting pipe is single-use — cloning and materializing
+    /// The resulting pipe is single-use -- cloning and materializing
     /// both clones will panic.
     pub fn from_stream(stream: impl Stream<Item = B> + Send + 'static) -> Self {
         Pipe::from_pull_once(PullFromStream {

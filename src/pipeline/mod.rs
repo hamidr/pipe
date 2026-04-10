@@ -1,7 +1,7 @@
-//! Composable pipeline — a lazy effectful list of elements.
+//! Composable pipeline -- a lazy effectful list of elements.
 //!
 //! `Pipe<B>` is analogous to `Stream[F, O]` in FS2.
-//! `B` is the **element type** — chunking is an internal detail.
+//! `B` is the **element type** -- chunking is an internal detail.
 //! Operations like `map`, `and_then`, `flat_map` can change the
 //! element type.
 
@@ -46,7 +46,7 @@ impl<B: Send + 'static> Emitter<B> {
 
 /// A lazy effectful list of `B` elements.
 ///
-/// `Pipe` is a blueprint — it describes a pipeline of operations but
+/// `Pipe` is a blueprint -- it describes a pipeline of operations but
 /// does not execute until a terminal (`.collect()`, `.fold()`, etc.) is
 /// called. Because it is a description, `Pipe` implements [`Clone`]:
 /// each clone materializes an independent operator chain.
@@ -877,7 +877,7 @@ mod tests {
             fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
                 Box::pin(async move {
                     if self.sent {
-                        // Hang forever — simulate a slow source
+                        // Hang forever -- simulate a slow source
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                         Ok(None)
                     } else {
@@ -1245,7 +1245,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrently_main_output_preserved() {
-        // Background is a no-op pipe — just verify main output is correct
+        // Background is a no-op pipe -- just verify main output is correct
         let result = Pipe::from_iter(vec![1, 2, 3])
             .concurrently(Pipe::from_iter(vec![99, 98, 97]))
             .collect()

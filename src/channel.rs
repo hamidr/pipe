@@ -1,7 +1,7 @@
 //! Bounded async channel for connecting pipe stages with backpressure.
 //!
-//! The sender blocks (awaits) when the buffer is full — this IS backpressure.
-//! The receiver blocks when empty — this IS demand-driven pull.
+//! The sender blocks (awaits) when the buffer is full -- this IS backpressure.
+//! The receiver blocks when empty -- this IS demand-driven pull.
 //!
 //! Used internally by `Pipe::prefetch`, `Pipe::merge`, and
 //! `Pipe::broadcast`.
@@ -43,7 +43,7 @@ impl<B: Send + 'static> Sender<B> {
 /// Receiving half. Implements [`PullOperator<B>`] for direct use in pipes.
 ///
 /// If an `AbortHandle` is attached, the background task is cancelled
-/// when the receiver is dropped — providing automatic resource cleanup.
+/// when the receiver is dropped -- providing automatic resource cleanup.
 pub struct Receiver<B> {
     rx: tokio::sync::mpsc::Receiver<Vec<B>>,
     /// Optional abort handle for the producing background task.

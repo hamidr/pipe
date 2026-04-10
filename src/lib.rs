@@ -1,11 +1,11 @@
-//! Generic async pipeline engine — composable, typed, pull-based data flows.
+//! Generic async pipeline engine -- composable, typed, pull-based data flows.
 //!
 //! `knot-pipe` provides a lazy effectful list (`Pipe<B>`, analogous to
 //! FS2's `Stream[F, O]`) and per-element operators. It is the streaming
 //! engine underneath Knot's graph query system, but can power any domain:
 //! data processing, HTTP middleware, ML inference, event streaming.
 //!
-//! `B` is the **element type** — chunking is an internal detail.
+//! `B` is the **element type** -- chunking is an internal detail.
 //!
 //! # Example
 //!

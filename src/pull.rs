@@ -6,7 +6,7 @@
 //! via [`Pipe::from_pull()`](crate::pipeline::Pipe::from_pull).
 //!
 //! Internally, elements flow through the pipeline in chunks (`Vec<B>`).
-//! The chunk boundary is an implementation detail — the public
+//! The chunk boundary is an implementation detail -- the public
 //! [`Pipe`](crate::pipeline::Pipe) API exposes only element-level operations.
 
 use std::future::Future;
@@ -139,7 +139,7 @@ impl<B: Send + 'static> PullOperator<B> for PullSource<B> {
 
 const ARC_SOURCE_CHUNK_SIZE: usize = 256;
 
-/// Source backed by `Arc<[B]>` — clones elements in chunks on demand
+/// Source backed by `Arc<[B]>` -- clones elements in chunks on demand
 /// instead of cloning the entire dataset upfront.
 pub(crate) struct ArcSource<B> {
     data: std::sync::Arc<[B]>,

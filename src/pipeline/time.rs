@@ -45,17 +45,17 @@ impl<B: Send + 'static> Pipe<B> {
 
                 loop {
                     if latest.is_some() {
-                        // We have a pending item — wait for quiet period or new item
+                        // We have a pending item -- wait for quiet period or new item
                         tokio::select! {
                             biased;
                             result = root.next_chunk() => {
                                 match result {
                                     Ok(Some(chunk)) => {
-                                        // New data — reset timer, keep latest
+                                        // New data -- reset timer, keep latest
                                         latest = chunk.into_iter().last();
                                     }
                                     Ok(None) | Err(_) => {
-                                        // Source done — flush latest and exit
+                                        // Source done -- flush latest and exit
                                         if let Some(item) = latest.take() {
                                             let _ = tx.send(item).await;
                                         }
@@ -64,14 +64,14 @@ impl<B: Send + 'static> Pipe<B> {
                                 }
                             }
                             _ = tokio::time::sleep(duration) => {
-                                // Quiet period elapsed — emit
+                                // Quiet period elapsed -- emit
                                 if let Some(item) = latest.take() {
                                     if tx.send(item).await.is_err() { return; }
                                 }
                             }
                         }
                     } else {
-                        // No pending item — wait for next chunk
+                        // No pending item -- wait for next chunk
                         match root.next_chunk().await {
                             Ok(Some(chunk)) => {
                                 latest = chunk.into_iter().last();
@@ -123,7 +123,7 @@ impl<B: Send + 'static> Pipe<B> {
                                         // Loop back to flush any full batches
                                     }
                                     Ok(None) => {
-                                        // Source exhausted — flush remainder
+                                        // Source exhausted -- flush remainder
                                         if !batch.is_empty() {
                                             let _ = tx.send(std::mem::take(&mut batch)).await;
                                         }
@@ -133,7 +133,7 @@ impl<B: Send + 'static> Pipe<B> {
                                 }
                             }
                             _ = &mut deadline => {
-                                // Timer fired — flush partial batch
+                                // Timer fired -- flush partial batch
                                 if !batch.is_empty() {
                                     if tx.send(std::mem::take(&mut batch)).await.is_err() { return; }
                                     batch = Vec::with_capacity(max_size);

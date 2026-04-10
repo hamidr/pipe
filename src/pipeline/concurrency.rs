@@ -79,7 +79,7 @@ impl<B: Send + 'static> Pipe<B> {
     /// Each branch has a bounded buffer. The source blocks if ANY branch
     /// is full. Background task cancelled when ALL branches are dropped.
     ///
-    /// Materialization is lazy — the source is not started until the
+    /// Materialization is lazy -- the source is not started until the
     /// first branch is consumed.
     pub fn broadcast(self, n: usize, buffer_size: usize) -> Vec<Pipe<B>>
     where
@@ -194,11 +194,11 @@ impl<B: Send + 'static> Pipe<B> {
     /// Hash-partition elements across N branches.
     ///
     /// Each element goes to exactly one branch: `key(&element) % n`.
-    /// No cloning — elements are moved. Each branch has a bounded buffer
+    /// No cloning -- elements are moved. Each branch has a bounded buffer
     /// of `buffer_size` chunks. Backpressure: source blocks if any branch
     /// is full. Background task cancelled when all branches are dropped.
     ///
-    /// Materialization is lazy — the source is not started until the
+    /// Materialization is lazy -- the source is not started until the
     /// first branch is consumed.
     ///
     /// ```ignore

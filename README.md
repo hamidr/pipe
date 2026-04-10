@@ -4,17 +4,17 @@ A lazy, effectful streaming library for Rust, inspired by [FS2](https://fs2.io/)
 
 ## Core types
 
-- **`Pipe<B>`** — lazy effectful stream. Pull-based, chunked internally, element-level API externally. No data flows until a terminal is called. Implements `Clone` — each clone materializes an independent pipeline.
+- **`Pipe<B>`** -- lazy effectful stream. Pull-based, chunked internally, element-level API externally. No data flows until a terminal is called. Implements `Clone` -- each clone materializes an independent pipeline.
 
-- **`PullOperator<B>`** — public pull protocol. `next_chunk() → Option<Vec<B>>`. Implement for custom sources. `from_pull()` accepts a factory; `from_pull_once()` wraps a single instance.
+- **`PullOperator<B>`** -- public pull protocol. `next_chunk() -> Option<Vec<B>>`. Implement for custom sources. `from_pull()` accepts a factory; `from_pull_once()` wraps a single instance.
 
-- **`Transform<A, B>`** — reusable, cloneable, composable stream transform. Named, stored, and combined via `and_then`.
+- **`Transform<A, B>`** -- reusable, cloneable, composable stream transform. Named, stored, and combined via `and_then`.
 
-- **`Sink<B, R>`** — reusable, cloneable output destination. Built-in sinks: `collect`, `count`, `first`, `last`, `drain`.
+- **`Sink<B, R>`** -- reusable, cloneable output destination. Built-in sinks: `collect`, `count`, `first`, `last`, `drain`.
 
-- **`Operator<A, B>`** — per-element async transform with captured state. Used with `Pipe::pipe()`.
+- **`Operator<A, B>`** -- per-element async transform with captured state. Used with `Pipe::pipe()`.
 
-- **`CancelToken`** — cooperative cancellation signal for graceful shutdown.
+- **`CancelToken`** -- cooperative cancellation signal for graceful shutdown.
 
 ## API overview
 
@@ -30,8 +30,8 @@ Pipe::repeat(42)                       // infinite: same value
 Pipe::repeat_with(|| rand())           // infinite: from factory
 Pipe::interval(Duration::from_secs(1)) // periodic Instant ticks
 Pipe::generate(|tx| async { ... })     // async generator via Emitter
-Pipe::from_reader(reader)              // AsyncRead → Pipe<Vec<u8>>
-Pipe::from_stream(stream)              // futures::Stream → Pipe
+Pipe::from_reader(reader)              // AsyncRead -> Pipe<Vec<u8>>
+Pipe::from_stream(stream)              // futures::Stream -> Pipe
 Pipe::from_pull(|| Box::new(src))      // custom PullOperator (cloneable)
 Pipe::from_pull_once(src)              // custom PullOperator (single-use)
 Pipe::bracket(acquire, use_fn, release) // resource-safe pipeline
@@ -78,10 +78,10 @@ Pipe::bracket(acquire, use_fn, release) // resource-safe pipeline
 .through(|p| p.filter(...).map(...))   // stream-level transform
 .apply(&transform)                     // apply a Transform<A, B>
 .chain(other)                          // sequential: self then other
-.zip(other)                            // positional pairing → (A, B)
+.zip(other)                            // positional pairing -> (A, B)
 .zip_with(other, |a, b| a + b)        // custom combiner
 .interleave(other)                     // deterministic round-robin
-.flatten()                             // Pipe<Pipe<B>> → Pipe<B>
+.flatten()                             // Pipe<Pipe<B>> -> Pipe<B>
 .concurrently(background)              // run background, output from self
 ```
 
@@ -103,35 +103,35 @@ Pipe::merge(vec![a, b, c])            // concurrent fan-in
 .broadcast(3, 4)                       // fan-out to N consumers
 .broadcast_through(n, buf, transforms) // fan-out + per-branch transform + merge
 .partition(4, 2, |x| *x as u64)       // hash-partition across N branches
-.unzip(buf)                            // Pipe<(A, B)> → (Pipe<A>, Pipe<B>)
+.unzip(buf)                            // Pipe<(A, B)> -> (Pipe<A>, Pipe<B>)
 ```
 
 ### Error handling
 
 ```rust
 .handle_error_with(|e| fallback_pipe)  // switch to fallback on error
-.attempt()                             // errors → Err elements (don't stop)
+.attempt()                             // errors -> Err elements (don't stop)
 Pipe::retry(|| build_pipe(), 3)        // retry from scratch up to N times
 ```
 
 ### Option protocol
 
 ```rust
-.none_terminate()                      // Pipe<B> → Pipe<Option<B>>, None at end
-.un_none_terminate()                   // Pipe<Option<B>> → Pipe<B>, stop at None
+.none_terminate()                      // Pipe<B> -> Pipe<Option<B>>, None at end
+.un_none_terminate()                   // Pipe<Option<B>> -> Pipe<B>, stop at None
 ```
 
 ### Terminals
 
 ```rust
-.collect().await?                      // → Vec<B>
-.fold(init, |acc, x| acc + x).await?   // → single value
-.count().await?                        // → usize
+.collect().await?                      // -> Vec<B>
+.fold(init, |acc, x| acc + x).await?   // -> single value
+.count().await?                        // -> usize
 .for_each(|x| process(x)).await?       // side-effect, discard
-.first().await?                        // → Option<B>
-.last().await?                         // → Option<B>
-.into_writer(writer).await?            // drain to AsyncWrite → bytes written
-.into_stream()                         // → impl Stream<Item = Result<B>>
+.first().await?                        // -> Option<B>
+.last().await?                         // -> Option<B>
+.into_writer(writer).await?            // drain to AsyncWrite -> bytes written
+.into_stream()                         // -> impl Stream<Item = Result<B>>
 .drain_to(&sink).await?                // consume via Sink
 ```
 
@@ -154,7 +154,7 @@ let pipe = Pipe::iterate(0, |x| x + 1)
     .prefetch(4)
     .map(|x| x * 2);
 
-// Later: signal shutdown — source stops, pipeline drains
+// Later: signal shutdown -- source stops, pipeline drains
 token.cancel();
 ```
 
@@ -168,7 +168,7 @@ let pipeline = normalize.and_then(clip);
 let result = Pipe::from_iter(values).apply(&pipeline).collect().await?;
 ```
 
-### Clone — reuse pipeline descriptions
+### Clone -- reuse pipeline descriptions
 
 ```rust
 let pipeline = Pipe::from_iter(1..=10)
@@ -198,7 +198,7 @@ Pipe::from_iter(1..=1000)
 ```rust
 use tokio::fs::File;
 
-// File → transform → file
+// File -> transform -> file
 let reader = File::open("input.txt").await?;
 let writer = File::create("output.txt").await?;
 

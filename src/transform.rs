@@ -55,7 +55,7 @@ impl<A: Send + 'static, B: Send + 'static> Transform<A, B> {
     }
 }
 
-/// Identity transform — passes the pipe through unchanged.
+/// Identity transform -- passes the pipe through unchanged.
 impl<A: Send + 'static> Transform<A, A> {
     pub fn identity() -> Self {
         Self::new(|p| p)

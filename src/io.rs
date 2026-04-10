@@ -8,7 +8,7 @@
 //! use tokio::net::TcpStream;
 //! use pipe::prelude::*;
 //!
-//! // File → uppercase → TCP
+//! // File -> uppercase -> TCP
 //! let reader = File::open("input.txt").await?;
 //! let writer = TcpStream::connect("127.0.0.1:9000").await?;
 //!
@@ -132,7 +132,7 @@ impl PullOperator<String> for PullLines {
                         if !lines.is_empty() {
                             return Ok(Some(lines));
                         }
-                        // No complete line yet — keep reading
+                        // No complete line yet -- keep reading
                     }
                     None => {
                         self.done = true;
@@ -152,7 +152,7 @@ impl Pipe<Vec<u8>> {
     /// Each element is a `Vec<u8>` buffer read from the source.
     /// Uses an 8 KiB read buffer by default.
     ///
-    /// The resulting pipe is single-use — cloning and materializing
+    /// The resulting pipe is single-use -- cloning and materializing
     /// both clones will panic. Use a factory closure with
     /// [`from_pull`](Pipe::from_pull) for cloneable I/O pipes.
     pub fn from_reader(reader: impl AsyncRead + Unpin + Send + 'static) -> Self {
