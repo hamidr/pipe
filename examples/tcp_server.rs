@@ -3,13 +3,31 @@ use std::net::SocketAddr;
 use pipe::pipeline::Pipe;
 use pipe::pull::PipeError;
 use pipe::topic::Topic;
-use pipe::{operator, PipeResult};
+use pipe::{operator, pipe_fn, PipeResult};
 use pipe_io::net::{self, TcpConnection, TcpWriter};
 
 type ChatMsg = (SocketAddr, String);
 
 static TOPIC: std::sync::LazyLock<Topic<ChatMsg>> =
     std::sync::LazyLock::new(|| Topic::new(256));
+
+#[pipe_fn]
+async fn accept(conn: TcpConnection) -> PipeResult<Pipe<String>> {
+    let addr = conn.addr();
+    let (lines, writer) = conn.into_lines();
+
+    let _ = TOPIC.publish((addr, format!("{addr} joined")));
+
+    let inbound = lines
+        .pipe(Publish { addr })
+        .on_finalize(move || { let _ = TOPIC.publish((addr, format!("{addr} left"))); });
+
+    let outbound = TOPIC.subscribe()
+        .filter(move |(src, _)| *src != addr)
+        .pipe(Forward { writer });
+
+    Ok(inbound.merge_with(outbound))
+}
 
 #[derive(Debug)]
 struct Publish { addr: SocketAddr }
@@ -39,22 +57,7 @@ async fn main() -> Result<(), PipeError> {
     println!("listening on 127.0.0.1:8080");
 
     net::tcp_server("127.0.0.1:8080".parse().unwrap())
-        .eval_map(|conn: TcpConnection| async move {
-            let addr = conn.addr();
-            let (lines, writer) = conn.into_lines();
-
-            let _ = TOPIC.publish((addr, format!("{addr} joined")));
-
-            let inbound = lines
-                .pipe(Publish { addr })
-                .on_finalize(move || { let _ = TOPIC.publish((addr, format!("{addr} left"))); });
-
-            let outbound = TOPIC.subscribe()
-                .filter(move |(src, _)| *src != addr)
-                .pipe(Forward { writer });
-
-            Ok(inbound.merge_with(outbound))
-        })
+        .eval_map(accept)
         .par_join_unbounded()
         .for_each(|_| {})
         .await?;
