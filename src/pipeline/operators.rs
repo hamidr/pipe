@@ -121,6 +121,55 @@ impl<B: Send + 'static> Pipe<B> {
         })
     }
 
+    /// Switch to a new inner pipe on each element, cancelling the previous.
+    ///
+    /// Like [`flat_map`](Self::flat_map) but only the latest inner pipe
+    /// runs at a time. When a new element arrives, the previous inner
+    /// pipe is cancelled. Useful for "latest wins" patterns like
+    /// autocomplete or route changes.
+    pub fn switch_map<C: Send + 'static>(
+        self,
+        f: impl Fn(B) -> Pipe<C> + Send + Sync + 'static,
+    ) -> Pipe<C> {
+        let parent = self.factory;
+        let f = Arc::new(f);
+        Pipe::from_factory(move || {
+            let (out_tx, out_rx) =
+                tokio::sync::mpsc::channel::<Vec<C>>(2);
+            let mut outer = parent();
+            let f = Arc::clone(&f);
+
+            let handle = tokio::spawn(async move {
+                let mut current_handle: Option<tokio::task::AbortHandle> = None;
+
+                while let Ok(Some(chunk)) = outer.next_chunk().await {
+                    for item in chunk {
+                        // Cancel the previous inner pipe
+                        if let Some(h) = current_handle.take() {
+                            h.abort();
+                        }
+                        let inner = f(item);
+                        let tx = out_tx.clone();
+                        let h = tokio::spawn(async move {
+                            let mut pull = inner.into_pull();
+                            while let Ok(Some(c)) = pull.next_chunk().await {
+                                if tx.send(c).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                        current_handle = Some(h.abort_handle());
+                    }
+                }
+                // Wait for the last inner pipe to finish
+                // (coordinator drops out_tx here, channel closes when
+                // the last inner task also drops its clone)
+            });
+
+            Box::new(crate::channel::Receiver::from_mpsc(out_rx).with_abort(handle.abort_handle()))
+        })
+    }
+
     /// Alias for [`tap`](Self::tap) -- follows Rust iterator convention.
     pub fn inspect(self, f: impl Fn(&B) + Send + Sync + 'static) -> Self {
         self.tap(f)

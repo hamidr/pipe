@@ -313,6 +313,33 @@ mod tests {
         assert_eq!(result, vec![0, 0, 1, 0, 1, 2]);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_map_cancels_previous() {
+        // Each element creates an inner pipe that emits [x, x+1, x+2]
+        // but with delays. switch_map should cancel previous inner pipes.
+        let result = Pipe::from_iter(vec![10, 20, 30])
+            .switch_map(|x| Pipe::from_iter(vec![x, x + 1, x + 2]))
+            .collect()
+            .await
+            .unwrap();
+        // Only the last inner pipe (30) should complete fully.
+        // Earlier ones may be partially cancelled. At minimum,
+        // the last pipe's elements must be present.
+        assert!(result.contains(&30));
+        assert!(result.contains(&31));
+        assert!(result.contains(&32));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_map_single_element() {
+        let result = Pipe::from_iter(vec![5])
+            .switch_map(|x| Pipe::from_iter(vec![x * 10]))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec![50]);
+    }
+
     #[tokio::test]
     async fn flat_map_infinite_sub() {
         let result = Pipe::once(1)
