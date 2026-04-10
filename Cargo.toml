@@ -1,11 +1,15 @@
+[workspace]
+members = [".", "pipe-macros"]
+
 [package]
 name = "pipe"
 version = "0.1.0"
 edition = "2021"
-description = "A lazy, effectful streaming library for Rust — FS2-inspired Pipe<B> with pull-based sources, async transforms, backpressure, and concurrency"
+description = "A lazy, effectful streaming library for Rust -- FS2-inspired Pipe<B> with pull-based sources, async transforms, backpressure, and concurrency"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/hamidr/pipe"
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "time"] }
 futures-core = "0.3"
+pipe-macros = { path = "pipe-macros" }

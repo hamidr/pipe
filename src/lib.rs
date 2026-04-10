@@ -47,6 +47,43 @@ pub mod sink;
 pub mod stream;
 pub mod transform;
 
+pub use pipe_macros::{operator, pull_operator};
+
+/// Construct a `Pipe` from literal elements.
+///
+/// ```ignore
+/// let p = pipe![1, 2, 3];
+/// assert_eq!(p.collect().await?, vec![1, 2, 3]);
+/// ```
+#[macro_export]
+macro_rules! pipe {
+    ($($elem:expr),* $(,)?) => {
+        $crate::pipeline::Pipe::from_iter(vec![$($elem),*])
+    };
+}
+
+/// Async generator shorthand for `Pipe::generate`.
+///
+/// Wraps the body in `async move { ... ; Ok(()) }` so the caller
+/// does not need the trailing `Ok(())`.
+///
+/// ```ignore
+/// let p = pipe_gen!(tx => {
+///     tx.emit(1).await?;
+///     tx.emit(2).await?;
+/// });
+/// ```
+#[macro_export]
+macro_rules! pipe_gen {
+    ($tx:ident => $body:block) => {
+        $crate::pipeline::Pipe::generate(|$tx| async move {
+            $body
+            #[allow(unreachable_code)]
+            Ok(())
+        })
+    };
+}
+
 pub mod prelude {
     //! Re-exports for convenience.
     pub use crate::cancel::CancelToken;
@@ -56,4 +93,5 @@ pub mod prelude {
     pub use crate::pull::{ChunkFut, PipeError, PullOperator};
     pub use crate::sink::Sink;
     pub use crate::transform::Transform;
+    pub use crate::{operator, pull_operator};
 }

@@ -150,6 +150,79 @@ Transform::new(f).and_then(other)      // compose transforms
 Sink::collect() / Sink::count() / ...  // reusable output destinations
 ```
 
+## Macros
+
+Four macros reduce boilerplate for common patterns.
+
+### `pipe![]` -- literal pipe construction
+
+```rust
+use pipe::pipe;
+
+let p = pipe![1, 2, 3];
+let result = p.filter(|x| x % 2 != 0).collect().await?;
+assert_eq!(result, vec![1, 3]);
+```
+
+### `pipe_gen!` -- async generator shorthand
+
+Wraps `Pipe::generate`, removing the `async move` and trailing `Ok(())`.
+
+```rust
+use pipe::pipe_gen;
+
+let p = pipe_gen!(tx => {
+    for i in 0..5 {
+        tx.emit(i).await?;
+    }
+});
+```
+
+### `#[operator]` -- derive `Operator<A, B>`
+
+Write a plain `async fn execute` and the macro generates the trait impl.
+The struct must `#[derive(Debug)]` separately.
+
+```rust
+use pipe::prelude::*;
+
+#[derive(Debug)]
+struct Double;
+
+#[operator]
+impl Double {
+    async fn execute(&self, x: i64) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(x * 2)
+    }
+}
+
+let result = pipe![1, 2, 3].pipe(Double).collect().await?;
+assert_eq!(result, vec![2, 4, 6]);
+```
+
+### `#[pull_operator]` -- derive `PullOperator<B>`
+
+Write a plain `async fn next_chunk` and the macro generates the trait impl.
+
+```rust
+use pipe::prelude::*;
+
+struct Countdown { n: usize }
+
+#[pull_operator]
+impl Countdown {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<usize>>, PipeError> {
+        if self.n == 0 { return Ok(None); }
+        let chunk = (1..=self.n).collect();
+        self.n = 0;
+        Ok(Some(chunk))
+    }
+}
+
+let result = Pipe::from_pull_once(Countdown { n: 3 }).collect().await?;
+assert_eq!(result, vec![1, 2, 3]);
+```
+
 ## Examples
 
 ### File processing
@@ -186,12 +259,11 @@ token.cancel();
 ```rust
 struct SqlCursor { /* ... */ }
 
-impl PullOperator<Row> for SqlCursor {
-    fn next_chunk(&mut self) -> ChunkFut<'_, Row> {
-        Box::pin(async move {
-            let rows = self.fetch_next_batch().await?;
-            if rows.is_empty() { Ok(None) } else { Ok(Some(rows)) }
-        })
+#[pull_operator]
+impl SqlCursor {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<Row>>, PipeError> {
+        let rows = self.fetch_next_batch().await?;
+        if rows.is_empty() { Ok(None) } else { Ok(Some(rows)) }
     }
 }
 
@@ -202,11 +274,10 @@ let pipe = Pipe::from_pull(|| Box::new(SqlCursor::new(conn, query)));
 ### Async generator
 
 ```rust
-let pipe = Pipe::generate(|tx| async move {
+let pipe = pipe_gen!(tx => {
     for i in 0..100 {
         tx.emit(i).await?;
     }
-    Ok(())
 });
 ```
 
