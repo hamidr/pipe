@@ -16,16 +16,21 @@ impl<B: Send + 'static> Pipe<B> {
     pub fn prefetch(self, n: usize) -> Self {
         let parent = self.factory;
         Self::from_factory(move || {
-            let (tx, rx) = crate::channel::bounded::<B>(n);
+            let (tx, rx) =
+                tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(n.max(1));
             let mut root = parent();
             let handle = tokio::spawn(async move {
-                while let Ok(Some(chunk)) = root.next_chunk().await {
-                    if tx.send(chunk).await.is_err() {
-                        break;
+                loop {
+                    match root.next_chunk().await {
+                        Ok(Some(chunk)) => {
+                            if tx.send(Ok(chunk)).await.is_err() { break; }
+                        }
+                        Ok(None) => break,
+                        Err(e) => { let _ = tx.send(Err(e)).await; break; }
                     }
                 }
             });
-            Box::new(rx.with_abort(handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(rx, handle.abort_handle()))
         })
     }
 
@@ -43,16 +48,26 @@ impl<B: Send + 'static> Pipe<B> {
 
         let factories: Vec<_> = pipes.into_iter().map(|p| p.factory).collect();
         Self::from_factory(move || {
-            let (merged_tx, merged_rx) = crate::channel::bounded::<B>(factories.len());
+            let (merged_tx, merged_rx) =
+                tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(factories.len().max(1));
             let mut handles = Vec::with_capacity(factories.len());
 
             for factory in &factories {
                 let tx = merged_tx.clone();
                 let mut root = factory();
                 let h = tokio::spawn(async move {
-                    while let Ok(Some(chunk)) = root.next_chunk().await {
-                        if tx.send(chunk).await.is_err() {
-                            break;
+                    loop {
+                        tokio::select! {
+                            result = root.next_chunk() => {
+                                match result {
+                                    Ok(Some(chunk)) => {
+                                        if tx.send(Ok(chunk)).await.is_err() { break; }
+                                    }
+                                    Ok(None) => break,
+                                    Err(e) => { let _ = tx.send(Err(e)).await; break; }
+                                }
+                            }
+                            _ = tx.closed() => break,
                         }
                     }
                 });
@@ -61,7 +76,10 @@ impl<B: Send + 'static> Pipe<B> {
             drop(merged_tx);
 
             Box::new(GuardedPull {
-                inner: Box::new(merged_rx),
+                inner: Box::new(crate::channel::ChunkResultReceiver::new(
+                    merged_rx,
+                    handles.remove(0),
+                )),
                 _guards: handles,
             })
         })
