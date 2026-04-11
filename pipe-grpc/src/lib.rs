@@ -27,3 +27,9 @@
 
 pub mod serve;
 pub mod streaming;
+
+pub use tonic::transport::Channel;
+pub use tonic::{Code, Request, Response, Status, Streaming};
+
+#[cfg(feature = "server")]
+pub use tonic::async_trait;

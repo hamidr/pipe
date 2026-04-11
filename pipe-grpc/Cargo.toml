@@ -14,6 +14,10 @@ pipe = { path = ".." }
 tonic = { version = "0.12", default-features = false, features = ["transport", "channel"] }
 futures-core = "0.3"
 
+[features]
+default = ["server"]
+server = ["tonic/codegen", "tonic/prost"]
+
 [build-dependencies]
 tonic-build = "0.12"
 
