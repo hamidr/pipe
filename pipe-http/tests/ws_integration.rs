@@ -32,7 +32,7 @@ async fn ws_basic_receive() {
     );
     let (addr, _server) = start_server(app).await;
 
-    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws")).await.unwrap();
+    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws"));
     let messages: Vec<WsMessage> = incoming
         .filter(|m| m.is_text())
         .take(5)
@@ -69,21 +69,18 @@ async fn ws_bidirectional_echo() {
     );
     let (addr, _server) = start_server(app).await;
 
-    let (incoming, sender) = ws::connect(format!("ws://{addr}/ws")).await.unwrap();
+    let (incoming, sender) = ws::connect(format!("ws://{addr}/ws"));
 
-    // Send messages in background
     let send_handle = tokio::spawn(async move {
         for i in 0..3 {
             sender.send_text(format!("hello-{i}")).await.unwrap();
         }
-        // Small delay to let echoes arrive before closing
         tokio::time::sleep(Duration::from_millis(50)).await;
         sender.close().await.unwrap();
     });
 
     let replies: Vec<String> = incoming
-        .filter(|m| m.is_text())
-        .map(|m| m.into_text())
+        .and_then(|m| m.text())
         .take(3)
         .collect()
         .await
@@ -107,10 +104,9 @@ async fn ws_binary_messages() {
     );
     let (addr, _server) = start_server(app).await;
 
-    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws")).await.unwrap();
+    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws"));
     let messages: Vec<Vec<u8>> = incoming
-        .filter(|m| m.is_binary())
-        .map(|m| m.into_bytes())
+        .and_then(|m| m.bytes())
         .collect()
         .await
         .unwrap();
@@ -131,7 +127,7 @@ async fn ws_close_frame_received() {
     );
     let (addr, _server) = start_server(app).await;
 
-    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws")).await.unwrap();
+    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws"));
     let messages: Vec<WsMessage> = incoming.collect().await.unwrap();
 
     assert!(messages.iter().any(|m| m.is_text()));
@@ -153,10 +149,9 @@ async fn ws_pipe_operators() {
     );
     let (addr, _server) = start_server(app).await;
 
-    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws")).await.unwrap();
+    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws"));
     let result: Vec<i64> = incoming
-        .filter(|m| m.is_text())
-        .map(|m| m.into_text())
+        .and_then(|m| m.text())
         .and_then(|s| s.parse::<i64>().ok())
         .filter(|x| x % 2 == 0)
         .collect()
@@ -182,9 +177,9 @@ async fn ws_cancellation_via_take() {
     );
     let (addr, _server) = start_server(app).await;
 
-    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws")).await.unwrap();
-    let messages = incoming
-        .filter(|m| m.is_text())
+    let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws"));
+    let messages: Vec<String> = incoming
+        .and_then(|m| m.text())
         .take(3)
         .collect()
         .await
@@ -195,6 +190,32 @@ async fn ws_cancellation_via_take() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ws_connect_failure() {
-    let result = ws::connect("ws://127.0.0.1:1/nonexistent").await;
+    let (incoming, _sender) = ws::connect("ws://127.0.0.1:1/nonexistent");
+    let result = incoming.collect().await;
+    assert!(result.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ws_sender_detects_closed_connection() {
+    let app = Router::new().route(
+        "/ws",
+        get(|upgrade: WebSocketUpgrade| async {
+            upgrade.on_upgrade(|mut socket: WebSocket| async move {
+                let _ = socket.send(Message::Close(None)).await;
+            })
+        }),
+    );
+    let (addr, _server) = start_server(app).await;
+
+    let (incoming, sender) = ws::connect(format!("ws://{addr}/ws"));
+
+    // Drain incoming to completion
+    let _ = incoming.collect().await;
+
+    // Give writer task time to notice the closure
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Sender should fail after connection is gone
+    let result = sender.send_text("should fail").await;
     assert!(result.is_err());
 }
