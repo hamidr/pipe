@@ -76,7 +76,7 @@ impl TcpConnection {
 /// but sequences of calls can interleave with other writers. For
 /// multi-part messages, build the full message first and send it
 /// in a single `write_all`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TcpWriter(Arc<Mutex<OwnedWriteHalf>>);
 
 impl TcpWriter {

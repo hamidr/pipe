@@ -14,7 +14,7 @@
 //! token.cancel();
 //! ```
 
-use crate::pull::{ChunkFut, PipeError, PullOperator};
+use crate::pull::{ChunkFut, PullOperator};
 
 /// A cooperative cancellation signal.
 ///

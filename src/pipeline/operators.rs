@@ -231,7 +231,6 @@ impl<B: Send + 'static> Pipe<B> {
             let on_chunk = std::sync::Arc::clone(&on_chunk);
             Box::new(crate::meter::PullMeter {
                 child,
-                name: name.clone(),
                 on_chunk: Box::new(move |s| on_chunk(s)),
                 stats: crate::meter::MeterStats {
                     name,

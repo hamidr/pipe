@@ -10,7 +10,7 @@
 //!     .map(|x| x * 10);
 //! ```
 
-use crate::pull::{ChunkFut, PipeError, PullOperator};
+use crate::pull::{ChunkFut, PullOperator};
 
 /// Statistics reported by a metered pipe stage.
 #[derive(Debug, Clone)]
@@ -29,7 +29,6 @@ pub struct MeterStats {
 
 pub(crate) struct PullMeter<B: Send + 'static> {
     pub(crate) child: Box<dyn PullOperator<B>>,
-    pub(crate) name: String,
     pub(crate) on_chunk: Box<dyn Fn(&MeterStats) + Send>,
     pub(crate) stats: MeterStats,
 }

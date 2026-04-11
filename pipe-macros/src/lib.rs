@@ -168,19 +168,6 @@ pub fn pipe_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(c) => c.to_uppercase().to_string() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect()
-}
-
 fn extract_second_param(sig: &syn::Signature) -> (&Type, &Pat) {
     let arg = sig
         .inputs

@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use pipe::pipeline::Pipe;
-use pipe::pull::{ChunkFut, PipeError, PullOperator};
+use pipe::pull::{ChunkFut, PullOperator};
 use tokio::io::AsyncReadExt;
 
 /// Lazy file reader that opens the file on first pull.
