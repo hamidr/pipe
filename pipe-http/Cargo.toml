@@ -1,6 +1,6 @@
 [package]
 name = "pipe-http"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
 description = "HTTP connectors for pipe -- SSE source, WebSocket source/sink"

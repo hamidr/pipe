@@ -3,7 +3,7 @@ members = [".", "pipe-macros", "pipe-io", "pipe-http", "pipe-grpc"]
 
 [package]
 name = "pipe"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A lazy, effectful streaming library for Rust -- FS2-inspired Pipe<B> with pull-based sources, async transforms, backpressure, and concurrency"
