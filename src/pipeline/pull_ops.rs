@@ -784,7 +784,7 @@ impl<B: Send + 'static> PullOperator<Vec<B>> for PullChunks<B> {
                 return Ok(None);
             }
             // Split buffer into sized groups using drain to avoid re-iteration
-            let num_groups = (buffer.len() + self.size - 1) / self.size;
+            let num_groups = buffer.len().div_ceil(self.size);
             let mut groups = Vec::with_capacity(num_groups);
             while buffer.len() > self.size {
                 let rest = buffer.split_off(self.size);
