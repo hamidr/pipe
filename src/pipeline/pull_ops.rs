@@ -165,9 +165,9 @@ impl<B: Clone + Send + Sync + 'static> PullOperator<B> for PullIntersperse<B> {
                 Some(chunk) => {
                     self.buffer.clear();
                     let capacity = if self.first {
-                        2 * chunk.len() - 1
+                        chunk.len().saturating_mul(2).saturating_sub(1)
                     } else {
-                        2 * chunk.len()
+                        chunk.len().saturating_mul(2)
                     };
                     self.buffer.reserve(capacity);
                     for item in chunk {
