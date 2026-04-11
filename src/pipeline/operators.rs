@@ -404,8 +404,10 @@ impl<B: Send + 'static> Pipe<B> {
 
     /// Remove all duplicate elements, keeping only the first occurrence.
     ///
-    /// Uses a `HashSet` to track seen elements. For consecutive-only
-    /// deduplication (no memory growth), use [`changes`](Self::changes).
+    /// **Memory**: holds a `HashSet` of every unique element seen so far.
+    /// Memory grows linearly with the number of distinct values in the
+    /// stream. For unbounded streams with high cardinality, prefer
+    /// [`changes`](Self::changes) (consecutive-only, O(1) memory).
     pub fn distinct(self) -> Self
     where
         B: std::hash::Hash + Eq + Clone + Sync,
@@ -421,6 +423,9 @@ impl<B: Send + 'static> Pipe<B> {
     }
 
     /// Remove duplicates by key, keeping the first occurrence of each key.
+    ///
+    /// **Memory**: holds a `HashSet` of every unique key seen so far.
+    /// Same memory considerations as [`distinct`](Self::distinct).
     pub fn distinct_by<K: std::hash::Hash + Eq + Clone + Send + Sync + 'static>(
         self,
         key: impl Fn(&B) -> K + Send + Sync + 'static,
