@@ -45,6 +45,11 @@ impl PullOperator<Vec<u8>> for LazyFileReader {
 ///
 /// The file is opened lazily on first pull. Returns `Pipe<Vec<u8>>`
 /// which supports `.lines()` for line-oriented processing.
+///
+/// **Security**: paths are passed directly to `tokio::fs::File::open`
+/// with no canonicalization or directory scoping. When the path
+/// originates from untrusted input, callers must validate it (e.g.,
+/// canonicalize and check that it falls within an allowed directory).
 pub fn read(path: impl AsRef<Path>) -> Pipe<Vec<u8>> {
     let path = path.as_ref().to_owned();
     read_sized(path, 8192)
