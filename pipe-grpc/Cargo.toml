@@ -1,0 +1,24 @@
+[package]
+name = "pipe-grpc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "gRPC connectors for pipe -- tonic Streaming<T> source"
+license = "MIT"
+repository = "https://github.com/hamidr/pipe"
+keywords = ["async", "streaming", "grpc", "tonic", "protobuf"]
+categories = ["asynchronous", "network-programming"]
+
+[dependencies]
+pipe = { path = ".." }
+tonic = { version = "0.12", default-features = false, features = ["transport", "channel"] }
+futures-core = "0.3"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio-stream = "0.1"
+tonic = { version = "0.12", features = ["codegen", "prost"] }
+prost = "0.13"

@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package pipe_grpc_test;
+
+service TestStreaming {
+    rpc ServerStream (StreamRequest) returns (stream StreamItem);
+}
+
+message StreamRequest {
+    int32 count = 1;
+}
+
+message StreamItem {
+    int32 value = 1;
+    string label = 2;
+}

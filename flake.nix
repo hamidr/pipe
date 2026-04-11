@@ -59,6 +59,7 @@
             buildInputs = [
               rustToolchain
               pkgs.rust-analyzer
+              pkgs.protobuf
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.apple-sdk_15
             ];

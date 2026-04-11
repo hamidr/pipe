@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "pipe-macros", "pipe-io", "pipe-http"]
+members = [".", "pipe-macros", "pipe-io", "pipe-http", "pipe-grpc"]
 
 [package]
 name = "pipe"
