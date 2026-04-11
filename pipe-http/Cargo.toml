@@ -3,20 +3,22 @@ name = "pipe-http"
 version = "0.5.0"
 edition = "2024"
 rust-version = "1.85"
-description = "HTTP connectors for pipe -- SSE source, WebSocket (planned)"
+description = "HTTP connectors for pipe -- SSE source, WebSocket source/sink"
 license = "MIT"
 repository = "https://github.com/hamidr/pipe"
-keywords = ["async", "streaming", "sse", "http", "server-sent-events"]
+keywords = ["async", "streaming", "sse", "websocket", "server-sent-events"]
 categories = ["asynchronous", "network-programming", "web-programming"]
 
 [dependencies]
 pipe = { path = ".." }
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 tokio = { version = "1", features = ["sync", "time", "rt"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 futures-core = "0.3"
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
