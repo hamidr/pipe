@@ -86,34 +86,16 @@ impl<B: Send + 'static> Pipe<B> {
             let handle = tokio::spawn(async move {
                 let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
                 let mut pending: std::collections::VecDeque<
-                    tokio::sync::oneshot::Receiver<Result<C, PipeError>>,
+                    tokio::task::JoinHandle<Result<C, PipeError>>,
                 > = std::collections::VecDeque::new();
-
+                let mut items: std::collections::VecDeque<B> = std::collections::VecDeque::new();
                 let mut source_done = false;
 
                 loop {
-                    // Fill up to concurrency pending tasks
-                    while !source_done && pending.len() < concurrency {
+                    if items.is_empty() && !source_done {
                         match root.next_chunk().await {
-                            Ok(Some(chunk)) => {
-                                for item in chunk {
-                                    let permit = match semaphore.clone().acquire_owned().await {
-                                        Ok(p) => p,
-                                        Err(_) => return,
-                                    };
-                                    let (tx, rx) = tokio::sync::oneshot::channel();
-                                    let f = Arc::clone(&f);
-                                    tokio::spawn(async move {
-                                        let result = f(item).await;
-                                        let _ = tx.send(result);
-                                        drop(permit);
-                                    });
-                                    pending.push_back(rx);
-                                }
-                            }
-                            Ok(None) => {
-                                source_done = true;
-                            }
+                            Ok(Some(chunk)) => items.extend(chunk),
+                            Ok(None) => source_done = true,
                             Err(e) => {
                                 let _ = out_tx.send(Err(e)).await;
                                 return;
@@ -121,26 +103,35 @@ impl<B: Send + 'static> Pipe<B> {
                         }
                     }
 
-                    if pending.is_empty() {
-                        return; // All done
+                    while let Some(item) = items.pop_front() {
+                        let permit = match semaphore.clone().acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => return,
+                        };
+                        let f = Arc::clone(&f);
+                        pending.push_back(tokio::spawn(async move {
+                            let result = f(item).await;
+                            drop(permit);
+                            result
+                        }));
                     }
 
-                    // Drain completed results in order
-                    while let Some(front) = pending.front_mut() {
-                        match front.await {
-                            Ok(result) => {
-                                pending.pop_front();
-                                if out_tx.send(result).await.is_err() {
-                                    return;
-                                }
-                            }
-                            Err(_) => {
-                                pending.pop_front();
-                                let _ = out_tx
-                                    .send(Err(PipeError::Custom("worker dropped".into())))
-                                    .await;
+                    if pending.is_empty() {
+                        return;
+                    }
+
+                    let front = pending.pop_front().unwrap();
+                    match front.await {
+                        Ok(result) => {
+                            if out_tx.send(result).await.is_err() {
                                 return;
                             }
+                        }
+                        Err(_) => {
+                            let _ = out_tx
+                                .send(Err(PipeError::Custom("worker dropped".into())))
+                                .await;
+                            return;
                         }
                     }
                 }
