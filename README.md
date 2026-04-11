@@ -59,7 +59,8 @@ Pipe::repeat_with(|| factory())        // infinite from factory
 Pipe::interval(duration)               // periodic Instant ticks
 Pipe::generate(|tx| async { ... })     // async generator via Emitter (cloneable)
 Pipe::generate_once(|tx| async { ... }) // async generator (single-use, owns captures)
-Pipe::from_reader(reader)              // AsyncRead -> Pipe<Vec<u8>>
+Pipe::from_reader(reader)              // AsyncRead -> Pipe<Vec<u8>> (8 KiB buffer)
+Pipe::from_reader_sized(reader, size)  // AsyncRead with custom buffer size
 Pipe::from_stream(stream)              // futures::Stream -> Pipe
 Pipe::from_pull(factory)               // custom PullOperator (cloneable)
 Pipe::from_pull_once(op)               // custom PullOperator (single-use)
@@ -172,6 +173,7 @@ topic.close();                         // subscribers complete
 let signal = Signal::new(0);
 let changes = signal.subscribe();      // Pipe<B>, starts with current value
 signal.set(42);                        // notify all subscribers
+signal.modify(|v| *v += 1);           // mutate in place, notify subscribers
 signal.get()                           // read current value
 
 // Convert pipe to signal
@@ -184,7 +186,11 @@ let sig = some_pipe.hold(initial);     // track latest value
 .through(f)                            // stream-level transform
 .apply(&transform)                     // apply a Transform<A, B>
 Transform::new(f).and_then(other)      // compose transforms
-Sink::collect() / Sink::count() / ...  // reusable output destinations
+Sink::new(f)                           // custom sink from async fn
+Sink::collect()                        // -> Vec<B>
+Sink::count()                          // -> usize
+Sink::first() / Sink::last()          // -> Option<B>
+Sink::drain()                          // discard all elements
 ```
 
 ## Macros
@@ -205,7 +211,8 @@ assert_eq!(result, vec![1, 3]);
 ```rust
 // Cloneable generator
 let p = pipe_gen!(tx => {
-    for i in 0..5 { tx.emit(i).await?; }
+    for i in 0..5 { tx.emit(i).await?; }      // single element
+    tx.emit_all(vec![10, 20, 30]).await?;      // batch
 });
 
 // Single-use generator (can capture owned resources)
@@ -254,6 +261,27 @@ let result = Pipe::from_pull_once(Countdown { n: 3 }).collect().await?;
 assert_eq!(result, vec![1, 2, 3]);
 ```
 
+### `#[pipe_fn]` -- async function to pipeline operator
+
+Normalizes an async function to return `PipeResult<B>`. Bare returns are
+auto-wrapped in `Ok`; `Result`/`PipeResult` returns pass through.
+
+```rust
+use pipe::prelude::*;
+
+// Infallible -- bare return, auto-wrapped in Ok
+#[pipe_fn]
+async fn double(x: i64) -> i64 { x * 2 }
+
+// Fallible -- returns PipeResult
+#[pipe_fn]
+async fn parse(s: String) -> PipeResult<i64> { Ok(s.parse()?) }
+
+// Use with eval_map:
+let result = pipe![1, 2, 3].eval_map(double).collect().await?;
+assert_eq!(result, vec![2, 4, 6]);
+```
+
 ## pipe-io
 
 The `pipe-io` crate provides ergonomic I/O constructors.
@@ -271,9 +299,18 @@ let lines = file::lines("input.txt")
 
 // Read raw bytes
 let bytes = file::read("data.bin").collect().await?;
+
+// Read with custom buffer size
+let bytes = file::read_sized("huge.bin", 64 * 1024).collect().await?;
 ```
 
 ### TCP server
+
+`TcpConnection` provides three ways to access the stream:
+
+- `conn.into_lines()` -- line-oriented `(Pipe<String>, TcpWriter)`
+- `conn.into_bytes()` -- raw byte chunks `(Pipe<Vec<u8>>, TcpWriter)`
+- `conn.into_split()` -- raw tokio halves `(OwnedReadHalf, OwnedWriteHalf)`
 
 ```rust
 use pipe_io::net;

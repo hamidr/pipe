@@ -5,9 +5,13 @@ members = [".", "pipe-macros", "pipe-io"]
 name = "pipe"
 version = "0.3.1"
 edition = "2021"
+rust-version = "1.75"
 description = "A lazy, effectful streaming library for Rust -- FS2-inspired Pipe<B> with pull-based sources, async transforms, backpressure, and concurrency"
 license = "MIT"
 repository = "https://github.com/hamidr/pipe"
+readme = "README.md"
+keywords = ["async", "streaming", "pipeline", "pull-based", "backpressure"]
+categories = ["asynchronous", "concurrency"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "time", "net"] }

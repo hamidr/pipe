@@ -1,8 +1,7 @@
 //! Generic async pipeline engine -- composable, typed, pull-based data flows.
 //!
-//! `knot-pipe` provides a lazy effectful list (`Pipe<B>`, analogous to
-//! FS2's `Stream[F, O]`) and per-element operators. It is the streaming
-//! engine underneath Knot's graph query system, but can power any domain:
+//! `pipe` provides a lazy effectful list (`Pipe<B>`, analogous to
+//! FS2's `Stream[F, O]`) and per-element operators. It can power any domain:
 //! data processing, HTTP middleware, ML inference, event streaming.
 //!
 //! `B` is the **element type** -- chunking is an internal detail.
@@ -10,7 +9,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use knot_pipe::prelude::*;
+//! use pipe::prelude::*;
 //!
 //! let result = Pipe::from_iter(1..=10)
 //!     .map(|x| x * 2)
@@ -121,5 +120,5 @@ pub mod prelude {
     pub use crate::pull::{ChunkFut, PipeError, PullOperator};
     pub use crate::sink::Sink;
     pub use crate::transform::Transform;
-    pub use crate::{operator, pull_operator};
+    pub use crate::{operator, pipe_fn, pull_operator};
 }

@@ -2,9 +2,12 @@
 name = "pipe-io"
 version = "0.3.1"
 edition = "2021"
+rust-version = "1.75"
 description = "I/O constructors for pipe -- TCP, UDP, and file convenience APIs"
 license = "MIT"
 repository = "https://github.com/hamidr/pipe"
+keywords = ["async", "streaming", "tcp", "udp", "file-io"]
+categories = ["asynchronous", "network-programming"]
 
 [dependencies]
 pipe = { path = ".." }
