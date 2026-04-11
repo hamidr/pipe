@@ -673,7 +673,10 @@ impl<B: Clone + Send + Sync + 'static> PullOperator<B> for BroadcastReceiver<B> 
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
         Box::pin(async move {
             match self.rx.recv().await {
-                Some(arc) => Ok(Some(arc.iter().cloned().collect())),
+                Some(arc) => Ok(Some(match Arc::try_unwrap(arc) {
+                    Ok(vec) => vec,
+                    Err(arc) => (*arc).clone(),
+                })),
                 None => Ok(None),
             }
         })
