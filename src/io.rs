@@ -73,17 +73,26 @@ where
     Ok(total)
 }
 
+/// Default max line length: 1 MiB.
+const DEFAULT_MAX_LINE_LEN: usize = 1024 * 1024;
+
 pub(crate) struct PullLines {
     pub(crate) child: Box<dyn PullOperator<Vec<u8>>>,
     remainder: Vec<u8>,
+    max_line_len: usize,
     done: bool,
 }
 
 impl PullLines {
     pub(crate) fn new(child: Box<dyn PullOperator<Vec<u8>>>) -> Self {
+        Self::with_max_len(child, DEFAULT_MAX_LINE_LEN)
+    }
+
+    pub(crate) fn with_max_len(child: Box<dyn PullOperator<Vec<u8>>>, max_line_len: usize) -> Self {
         Self {
             child,
             remainder: Vec::new(),
+            max_line_len,
             done: false,
         }
     }
@@ -97,7 +106,11 @@ impl PullOperator<String> for PullLines {
                     if self.remainder.is_empty() {
                         return Ok(None);
                     }
-                    // Yield final line without trailing newline
+                    if self.remainder.len() > self.max_line_len {
+                        return Err(PipeError::Custom(
+                            format!("line exceeds max length of {} bytes", self.max_line_len).into(),
+                        ));
+                    }
                     let line = String::from_utf8_lossy(&self.remainder).into_owned();
                     self.remainder.clear();
                     return Ok(Some(vec![line]));
@@ -107,6 +120,18 @@ impl PullOperator<String> for PullLines {
                     Some(buffers) => {
                         for buf in buffers {
                             self.remainder.extend_from_slice(&buf);
+                        }
+
+                        if self.remainder.len() > self.max_line_len
+                            && !self.remainder.contains(&b'\n')
+                        {
+                            return Err(PipeError::Custom(
+                                format!(
+                                    "line exceeds max length of {} bytes",
+                                    self.max_line_len
+                                )
+                                .into(),
+                            ));
                         }
 
                         let mut lines = Vec::new();
@@ -132,11 +157,9 @@ impl PullOperator<String> for PullLines {
                         if !lines.is_empty() {
                             return Ok(Some(lines));
                         }
-                        // No complete line yet -- keep reading
                     }
                     None => {
                         self.done = true;
-                        // Loop back to handle remaining bytes
                     }
                 }
             }
@@ -170,10 +193,21 @@ impl Pipe<Vec<u8>> {
     /// Split byte buffers into lines (`\n` or `\r\n` delimited).
     ///
     /// Handles lines split across read boundaries. The final line is
-    /// emitted even without a trailing newline. Uses lossy UTF-8 conversion.
+    /// emitted even without a trailing newline. Uses lossy UTF-8
+    /// conversion. Lines longer than 1 MiB return an error; use
+    /// [`lines_with_max_len`](Self::lines_with_max_len) to customize.
     pub fn lines(self) -> Pipe<String> {
         let parent = self.factory;
         Pipe::from_factory(move || Box::new(PullLines::new(parent())))
+    }
+
+    /// Like [`lines`](Self::lines) but with a custom max line length.
+    ///
+    /// Returns `PipeError::Custom` if any single line exceeds
+    /// `max_len` bytes without a newline delimiter.
+    pub fn lines_with_max_len(self, max_len: usize) -> Pipe<String> {
+        let parent = self.factory;
+        Pipe::from_factory(move || Box::new(PullLines::with_max_len(parent(), max_len)))
     }
 }
 
@@ -246,6 +280,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, vec!["hello", "world"]);
+    }
+
+    #[tokio::test]
+    async fn lines_max_len_rejects_long_lines() {
+        // 20 bytes with no newline, limit of 10
+        let data = b"abcdefghijklmnopqrst";
+        let cursor = std::io::Cursor::new(data.to_vec());
+        let result = Pipe::from_reader(cursor)
+            .lines_with_max_len(10)
+            .collect()
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn lines_max_len_passes_short_lines() {
+        let data = b"short\nlines\n";
+        let cursor = std::io::Cursor::new(data.to_vec());
+        let result = Pipe::from_reader(cursor)
+            .lines_with_max_len(100)
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["short", "lines"]);
     }
 
     #[tokio::test]
