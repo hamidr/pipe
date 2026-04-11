@@ -96,11 +96,18 @@ impl TcpWriter {
 /// connection. Use with `.par_join_unbounded()` or `.par_join(n)`
 /// to handle connections concurrently.
 ///
+/// **Timeouts**: the accept loop itself has no timeout (it would
+/// terminate the server during quiet periods). To guard against
+/// slow or idle clients, apply `.timeout()` on per-connection
+/// read pipes:
+///
 /// ```ignore
 /// net::tcp_server("0.0.0.0:8080".parse()?)
 ///     .map(|conn| {
 ///         let (lines, writer) = conn.into_lines();
-///         lines.eval_map(move |line| { /* handle */ })
+///         lines
+///             .timeout(Duration::from_secs(30))  // per-read timeout
+///             .eval_map(move |line| { /* handle */ })
 ///     })
 ///     .par_join_unbounded()
 ///     .for_each(|log| println!("{log}"))
