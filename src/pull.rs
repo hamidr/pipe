@@ -301,13 +301,14 @@ impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B> for 
     }
 }
 
-pub(crate) struct PullAndThen<A, F> {
+pub(crate) struct PullAndThen<A, B, F> {
     pub(crate) child: Box<dyn PullOperator<A>>,
     pub(crate) f: F,
+    pub(crate) buf: Vec<B>,
 }
 
 impl<A: Send + 'static, B: Send + 'static, F: Fn(A) -> Option<B> + Send + 'static> PullOperator<B>
-    for PullAndThen<A, F>
+    for PullAndThen<A, B, F>
 {
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
         Box::pin(async move {
@@ -315,10 +316,10 @@ impl<A: Send + 'static, B: Send + 'static, F: Fn(A) -> Option<B> + Send + 'stati
             loop {
                 match self.child.next_chunk().await? {
                     Some(chunk) => {
-                        let result: Vec<B> =
-                            chunk.into_iter().filter_map(|a| (self.f)(a)).collect();
-                        if !result.is_empty() {
-                            return Ok(Some(result));
+                        self.buf.clear();
+                        self.buf.extend(chunk.into_iter().filter_map(|a| (self.f)(a)));
+                        if !self.buf.is_empty() {
+                            return Ok(Some(std::mem::take(&mut self.buf)));
                         }
                         empty_runs += 1;
                         if empty_runs >= YIELD_AFTER_EMPTY {

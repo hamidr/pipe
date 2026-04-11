@@ -42,6 +42,7 @@ impl<B: Send + 'static> Pipe<B> {
             Box::new(PullAndThen {
                 child,
                 f: move |b| f(b),
+                buf: Vec::new(),
             })
         })
     }
