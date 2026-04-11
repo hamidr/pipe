@@ -447,6 +447,11 @@ impl<B: Send + 'static> Pipe<B> {
     /// Group consecutive elements that share the same key.
     ///
     /// Emits `(key, Vec<B>)` for each run of elements with equal keys.
+    ///
+    /// **Memory**: the current group is buffered in memory until the
+    /// key changes. A single long run accumulates all its elements
+    /// before emitting. For streams where runs can be very large,
+    /// consider chunking or windowing first.
     pub fn group_adjacent_by<K: PartialEq + Send + 'static>(
         self,
         key: impl Fn(&B) -> K + Send + Sync + 'static,
