@@ -82,7 +82,7 @@ pub type ChunkFut<'a, B> =
 
 /// Pull-based operator that yields chunks on demand.
 ///
-/// This is the execution protocol for knot-pipe. External crates
+/// This is the execution protocol for pipe. External crates
 /// implement this trait to provide custom sources that compose with
 /// [`Pipe`](crate::pipeline::Pipe):
 ///
@@ -109,6 +109,31 @@ pub trait PullOperator<B: Send + 'static>: Send {
 impl<B: Send + 'static, T: PullOperator<B> + ?Sized> PullOperator<B> for Box<T> {
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
         (**self).next_chunk()
+    }
+}
+
+pub(crate) struct ErrorSource<B> {
+    error: Option<PipeError>,
+    _phantom: std::marker::PhantomData<B>,
+}
+
+impl<B> ErrorSource<B> {
+    pub(crate) fn new(error: PipeError) -> Self {
+        Self {
+            error: Some(error),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<B: Send + 'static> PullOperator<B> for ErrorSource<B> {
+    fn next_chunk(&mut self) -> ChunkFut<'_, B> {
+        Box::pin(async move {
+            match self.error.take() {
+                Some(e) => Err(e),
+                None => Ok(None),
+            }
+        })
     }
 }
 

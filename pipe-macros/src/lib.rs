@@ -45,7 +45,11 @@ pub fn operator(_attr: TokenStream, item: TokenStream) -> TokenStream {
             fn execute<'__op>(&'__op self, #input_name: #input_type)
                 -> pipe::operator::PinFut<'__op, #output_type>
             {
-                Box::pin(async move #body)
+                Box::pin(async move {
+                    let __result: ::std::result::Result<#output_type, ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>>
+                        = (|| async move #body)().await;
+                    __result.map_err(|e| pipe::pull::PipeError::from(e))
+                })
             }
         }
     };

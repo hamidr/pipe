@@ -158,22 +158,7 @@ impl<B: Send + 'static> Pipe<B> {
                                 let tx = out_tx.clone();
                                 let h = tokio::spawn(async move {
                                     let mut pull = inner.into_pull();
-                                    loop {
-                                        let chunk = tokio::select! {
-                                            result = pull.next_chunk() => result,
-                                            _ = tx.closed() => break,
-                                        };
-                                        match chunk {
-                                            Ok(Some(c)) => {
-                                                if tx.send(Ok(c)).await.is_err() { break; }
-                                            }
-                                            Ok(None) => break,
-                                            Err(e) => {
-                                                let _ = tx.send(Err(e)).await;
-                                                break;
-                                            }
-                                        }
-                                    }
+                                    super::concurrency::drain_to_channel(&mut *pull, &tx).await;
                                 });
                                 current_handle = Some(h.abort_handle());
                             }
@@ -298,7 +283,7 @@ impl<B: Send + 'static> Pipe<B> {
 
     /// Group elements into fixed-size chunks, exposing batch boundaries.
     pub fn chunks(self, size: usize) -> Pipe<Vec<B>> {
-        assert!(size > 0, "chunks: size must be > 0");
+        let size = size.max(1);
         let parent = self.factory;
         Pipe::from_factory(move || {
             Box::new(PullChunks {
@@ -318,7 +303,7 @@ impl<B: Send + 'static> Pipe<B> {
     where
         B: Clone + Sync,
     {
-        assert!(size > 0, "sliding_window size must be > 0");
+        let size = size.max(1);
         let parent = self.factory;
         Pipe::from_factory(move || {
             Box::new(PullSlidingWindow {

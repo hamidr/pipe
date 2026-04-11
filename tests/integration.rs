@@ -32,7 +32,6 @@ async fn etl_pipeline() {
 async fn fan_out_fan_in() {
     let mut result = Pipe::from_iter(1..=12i64)
         .broadcast_through(
-            3,
             4,
             vec![
                 Box::new(|p: Pipe<i64>| p.map(|x| x * 10)),  // branch 0: multiply
@@ -151,7 +150,7 @@ async fn attempt_catches_error_as_element() {
 /// Generate → partition → merge roundtrip with stateful generator
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn generate_partition_merge() {
-    let mut result = Pipe::generate(|tx| async move {
+    let result = Pipe::generate(|tx| async move {
         for i in 0..20i64 {
             tx.emit(i).await?;
         }

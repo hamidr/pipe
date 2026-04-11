@@ -164,6 +164,12 @@ impl<B: Clone + Send + Sync + 'static> PullOperator<B> for PullIntersperse<B> {
             match self.child.next_chunk().await? {
                 Some(chunk) => {
                     self.buffer.clear();
+                    let capacity = if self.first {
+                        2 * chunk.len() - 1
+                    } else {
+                        2 * chunk.len()
+                    };
+                    self.buffer.reserve(capacity);
                     for item in chunk {
                         if !self.first {
                             self.buffer.push((*self.separator).clone());

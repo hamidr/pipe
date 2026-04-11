@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use pipe::pipeline::Pipe;
 use pipe::pull::PipeError;
 use pipe::topic::Topic;
-use pipe::{operator, pipe_fn, PipeResult};
+use pipe::{operator, pipe_fn};
 use pipe_io::net::{self, TcpConnection, TcpWriter};
 
 type ChatMsg = (SocketAddr, String);
@@ -12,7 +12,7 @@ static TOPIC: std::sync::LazyLock<Topic<ChatMsg>> =
     std::sync::LazyLock::new(|| Topic::new(256));
 
 #[pipe_fn]
-async fn accept(conn: TcpConnection) -> PipeResult<Pipe<String>> {
+async fn accept(conn: TcpConnection) -> Result<Pipe<String>, PipeError> {
     let addr = conn.addr();
     let (lines, writer) = conn.into_lines();
 
@@ -34,7 +34,7 @@ struct Publish { addr: SocketAddr }
 
 #[operator]
 impl Publish {
-    async fn execute(&self, line: String) -> PipeResult<String> {
+    async fn execute(&self, line: String) -> Result<String, PipeError> {
         let msg = format!("{}: {line}", self.addr);
         TOPIC.publish((self.addr, msg.clone()))?;
         Ok(msg)
@@ -46,7 +46,7 @@ struct Forward { writer: TcpWriter }
 
 #[operator]
 impl Forward {
-    async fn execute(&self, (_src, msg): ChatMsg) -> PipeResult<String> {
+    async fn execute(&self, (_src, msg): ChatMsg) -> Result<String, PipeError> {
         self.writer.write_all(format!("{msg}\n").as_bytes()).await?;
         Ok(msg)
     }

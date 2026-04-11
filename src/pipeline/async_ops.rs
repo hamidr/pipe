@@ -164,6 +164,7 @@ impl<B: Send + 'static> Pipe<B> {
 
             let handle = tokio::spawn(async move {
                 let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+                let mut workers = tokio::task::JoinSet::new();
 
                 loop {
                     match root.next_chunk().await {
@@ -172,21 +173,29 @@ impl<B: Send + 'static> Pipe<B> {
                                 let f = Arc::clone(&f);
                                 let sem = Arc::clone(&semaphore);
                                 let tx = out_tx.clone();
-                                // Acquire permit before spawning to enforce concurrency limit
                                 let permit = match sem.acquire_owned().await {
                                     Ok(p) => p,
-                                    Err(_) => return,
+                                    Err(_) => {
+                                        workers.abort_all();
+                                        return;
+                                    }
                                 };
-                                tokio::spawn(async move {
+                                workers.spawn(async move {
                                     let result = f(item).await;
                                     let _ = tx.send(result).await;
                                     drop(permit);
                                 });
                             }
                         }
-                        Ok(None) => return,
+                        Ok(None) => {
+                            // Source exhausted -- wait for remaining workers
+                            drop(out_tx);
+                            while workers.join_next().await.is_some() {}
+                            return;
+                        }
                         Err(e) => {
                             let _ = out_tx.send(Err(e)).await;
+                            workers.abort_all();
                             return;
                         }
                     }

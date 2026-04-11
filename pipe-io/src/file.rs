@@ -110,6 +110,45 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn read_directory_errors() {
+        let result = read("/tmp").collect().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_empty_file() {
+        let path = tempfile("empty", b"");
+        let result = read(&path).collect().await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lines_empty_file() {
+        let path = tempfile("empty_lines", b"");
+        let result = lines(&path).collect().await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lines_with_mixed_endings() {
+        let path = tempfile("mixed", b"a\nb\r\nc\n");
+        let result = lines(&path).collect().await.unwrap();
+        assert_eq!(result, vec!["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn read_sized_custom_buffer() {
+        let path = tempfile("sized", b"abcdefghij");
+        let chunks = read_sized(&path, 3).collect().await.unwrap();
+        // Each chunk is at most 3 bytes
+        for chunk in &chunks {
+            assert!(chunk.len() <= 3);
+        }
+        let flat: Vec<u8> = chunks.into_iter().flatten().collect();
+        assert_eq!(flat, b"abcdefghij");
+    }
+
     fn tempfile(name: &str, content: &[u8]) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("pipe-io-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

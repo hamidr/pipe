@@ -95,15 +95,18 @@ impl<B: Send + 'static> Pipe<B> {
     /// Create a stream from a single [`PullOperator`] instance.
     ///
     /// The resulting pipe can be cloned, but only one clone may be
-    /// materialized (executed). Panics if a second clone is executed.
+    /// materialized (executed). A second materialization returns
+    /// `PipeError::Closed` on first pull.
     pub fn from_pull_once(op: impl PullOperator<B> + 'static) -> Self {
         let slot: Arc<std::sync::Mutex<Option<Box<dyn PullOperator<B>>>>> =
             Arc::new(std::sync::Mutex::new(Some(Box::new(op))));
         Self::from_factory(move || {
-            slot.lock()
-                .unwrap()
-                .take()
-                .expect("from_pull_once: operator already consumed (Pipe was cloned and both materialized)")
+            match slot.lock().unwrap().take() {
+                Some(op) => op,
+                None => Box::new(crate::pull::ErrorSource::new(
+                    PipeError::Custom("from_pull_once: operator already consumed (Pipe was cloned and both materialized)".into()),
+                )),
+            }
         })
     }
 
@@ -172,10 +175,12 @@ impl<B: Send + 'static> Pipe<B> {
                 Box::new(move |emitter| Box::pin(f(emitter))),
             )));
         Self::from_factory(move || {
-            let f = slot.lock()
-                .unwrap()
-                .take()
-                .expect("generate_once: generator already consumed (Pipe was cloned and both materialized)");
+            let f = match slot.lock().unwrap().take() {
+                Some(f) => f,
+                None => return Box::new(crate::pull::ErrorSource::new(
+                    PipeError::Custom("generate_once: generator already consumed (Pipe was cloned and both materialized)".into()),
+                )) as Box<dyn PullOperator<B>>,
+            };
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(2);
             let handle = tokio::spawn(async move {
                 let emitter = Emitter { tx: tx.clone() };

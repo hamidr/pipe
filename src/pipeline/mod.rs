@@ -1455,4 +1455,144 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn debounce_emits_after_quiet_period() {
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .debounce(std::time::Duration::from_millis(20))
+            .collect()
+            .await
+            .unwrap();
+        // Fast source: only the last element survives after the quiet period
+        assert_eq!(result, vec![3]);
+    }
+
+    #[tokio::test]
+    async fn eval_for_each_async_side_effect() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        Pipe::from_iter(vec![1, 2, 3])
+            .eval_for_each(move |x| {
+                let seen = seen2.clone();
+                async move {
+                    seen.lock().unwrap().push(x);
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn empty_pipe_through_operators() {
+        let empty: Pipe<i64> = Pipe::empty();
+        assert_eq!(empty.clone().map(|x| x * 2).collect().await.unwrap(), Vec::<i64>::new());
+        assert_eq!(empty.clone().filter(|_| true).collect().await.unwrap(), Vec::<i64>::new());
+        assert_eq!(empty.clone().take(5).collect().await.unwrap(), Vec::<i64>::new());
+        assert_eq!(empty.clone().skip(5).collect().await.unwrap(), Vec::<i64>::new());
+        assert_eq!(empty.clone().fold(0, |a, b| a + b).await.unwrap(), 0);
+        assert_eq!(empty.clone().count().await.unwrap(), 0);
+        assert_eq!(empty.clone().first().await.unwrap(), None);
+        assert_eq!(empty.clone().last().await.unwrap(), None);
+        assert_eq!(empty.clone().reduce(|a, b| a + b).await.unwrap(), None);
+        assert_eq!(empty.clone().chunks(3).collect().await.unwrap(), Vec::<Vec<i64>>::new());
+        assert_eq!(empty.clone().enumerate().collect().await.unwrap(), Vec::<(usize, i64)>::new());
+        assert_eq!(empty.clone().distinct().collect().await.unwrap(), Vec::<i64>::new());
+        assert_eq!(empty.clone().changes().collect().await.unwrap(), Vec::<i64>::new());
+    }
+
+    #[tokio::test]
+    async fn error_propagation_through_map() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct FailSource;
+        impl PullOperator<i64> for FailSource {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async { Err("source-error".into()) })
+            }
+        }
+
+        let result = Pipe::from_pull_once(FailSource)
+            .map(|x| x * 2)
+            .collect()
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn error_propagation_through_filter() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct FailSource;
+        impl PullOperator<i64> for FailSource {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async { Err("source-error".into()) })
+            }
+        }
+
+        let result = Pipe::from_pull_once(FailSource)
+            .filter(|_| true)
+            .collect()
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn error_propagation_through_flat_map() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct FailSource;
+        impl PullOperator<i64> for FailSource {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async { Err("source-error".into()) })
+            }
+        }
+
+        let result = Pipe::from_pull_once(FailSource)
+            .flat_map(|x| Pipe::once(x))
+            .collect()
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn error_propagation_through_eval_map() {
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .eval_map(|x| async move {
+                if x == 2 {
+                    Err(crate::pull::PipeError::Custom("boom".into()))
+                } else {
+                    Ok(x)
+                }
+            })
+            .collect()
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn error_propagation_through_scan() {
+        use crate::pull::{ChunkFut, PullOperator};
+
+        struct FailAfterTwo { count: usize }
+        impl PullOperator<i64> for FailAfterTwo {
+            fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
+                Box::pin(async move {
+                    if self.count >= 2 {
+                        Err("scan-fail".into())
+                    } else {
+                        self.count += 1;
+                        Ok(Some(vec![self.count as i64]))
+                    }
+                })
+            }
+        }
+
+        let result = Pipe::from_pull_once(FailAfterTwo { count: 0 })
+            .scan(0i64, |acc, x| { *acc += x; *acc })
+            .collect()
+            .await;
+        assert!(result.is_err());
+    }
 }

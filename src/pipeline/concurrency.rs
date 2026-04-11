@@ -7,6 +7,26 @@ use crate::pull::{PipeError, PullOperator, PullZip};
 use super::pull_ops::{BroadcastReceiver, GuardedPull, LazyFanOut, LazyPartition, PartitionReceiver, SharedAbort};
 use super::Pipe;
 
+/// Drain a PullOperator into a chunk-level channel, cancelling on consumer drop.
+pub(crate) async fn drain_to_channel<B: Send + 'static>(
+    root: &mut dyn PullOperator<B>,
+    tx: &tokio::sync::mpsc::Sender<Result<Vec<B>, PipeError>>,
+) {
+    loop {
+        let result = tokio::select! {
+            r = root.next_chunk() => r,
+            _ = tx.closed() => break,
+        };
+        match result {
+            Ok(Some(chunk)) => {
+                if tx.send(Ok(chunk)).await.is_err() { break; }
+            }
+            Ok(None) => break,
+            Err(e) => { let _ = tx.send(Err(e)).await; break; }
+        }
+    }
+}
+
 impl<B: Send + 'static> Pipe<B> {
     /// Buffer up to `n` chunks ahead of the consumer.
     ///
@@ -20,15 +40,7 @@ impl<B: Send + 'static> Pipe<B> {
                 tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(n.max(1));
             let mut root = parent();
             let handle = tokio::spawn(async move {
-                loop {
-                    match root.next_chunk().await {
-                        Ok(Some(chunk)) => {
-                            if tx.send(Ok(chunk)).await.is_err() { break; }
-                        }
-                        Ok(None) => break,
-                        Err(e) => { let _ = tx.send(Err(e)).await; break; }
-                    }
-                }
+                drain_to_channel(&mut *root, &tx).await;
             });
             Box::new(crate::channel::ChunkResultReceiver::new(rx, handle.abort_handle()))
         })
@@ -56,20 +68,7 @@ impl<B: Send + 'static> Pipe<B> {
                 let tx = merged_tx.clone();
                 let mut root = factory();
                 let h = tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            result = root.next_chunk() => {
-                                match result {
-                                    Ok(Some(chunk)) => {
-                                        if tx.send(Ok(chunk)).await.is_err() { break; }
-                                    }
-                                    Ok(None) => break,
-                                    Err(e) => { let _ = tx.send(Err(e)).await; break; }
-                                }
-                            }
-                            _ = tx.closed() => break,
-                        }
-                    }
+                    drain_to_channel(&mut *root, &tx).await;
                 });
                 handles.push(h.abort_handle());
             }
@@ -185,19 +184,13 @@ impl<B: Send + 'static> Pipe<B> {
     /// from all branches are merged (interleaved by arrival order).
     pub fn broadcast_through(
         self,
-        n: usize,
         buffer_size: usize,
         transforms: Vec<Box<dyn FnOnce(Pipe<B>) -> Pipe<B> + Send>>,
     ) -> Self
     where
         B: Clone + Sync,
     {
-        assert_eq!(
-            n,
-            transforms.len(),
-            "broadcast_through: n ({n}) must equal transforms.len() ({})",
-            transforms.len()
-        );
+        let n = transforms.len();
         let branches = self.broadcast(n, buffer_size);
         let transformed: Vec<Pipe<B>> = branches
             .into_iter()
@@ -293,25 +286,8 @@ impl<B: Send + 'static> Pipe<Pipe<B>> {
                                 };
                                 let tx = out_tx.clone();
                                 tokio::spawn(async move {
-                                    let mut inner = pipe.into_pull();
-                                    loop {
-                                        let chunk = tokio::select! {
-                                            result = inner.next_chunk() => result,
-                                            _ = tx.closed() => break,
-                                        };
-                                        match chunk {
-                                            Ok(Some(chunk)) => {
-                                                if tx.send(Ok::<_, PipeError>(chunk)).await.is_err() {
-                                                    break;
-                                                }
-                                            }
-                                            Ok(None) => break,
-                                            Err(e) => {
-                                                let _ = tx.send(Err(e)).await;
-                                                break;
-                                            }
-                                        }
-                                    }
+                                    let mut pull = pipe.into_pull();
+                                    drain_to_channel(&mut *pull, &tx).await;
                                     drop(permit);
                                 });
                             }
@@ -356,24 +332,7 @@ impl<B: Send + 'static> Pipe<Pipe<B>> {
                                 let tx = out_tx.clone();
                                 tokio::spawn(async move {
                                     let mut inner = pipe.into_pull();
-                                    loop {
-                                        let chunk = tokio::select! {
-                                            result = inner.next_chunk() => result,
-                                            _ = tx.closed() => break,
-                                        };
-                                        match chunk {
-                                            Ok(Some(chunk)) => {
-                                                if tx.send(Ok::<_, PipeError>(chunk)).await.is_err() {
-                                                    break;
-                                                }
-                                            }
-                                            Ok(None) => break,
-                                            Err(e) => {
-                                                let _ = tx.send(Err(e)).await;
-                                                break;
-                                            }
-                                        }
-                                    }
+                                    drain_to_channel(&mut *inner, &tx).await;
                                 });
                             }
                         }

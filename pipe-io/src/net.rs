@@ -254,6 +254,53 @@ mod tests {
         assert_eq!(results, vec!["aaa", "bbb", "ccc"]);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tcp_into_bytes_returns_raw_data() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            let (stream, peer_addr) = listener.accept().await.unwrap();
+            let (reader, writer) = stream.into_split();
+            let conn = TcpConnection { addr: peer_addr, reader, writer };
+            let (bytes_pipe, _writer) = conn.into_bytes();
+            let chunks = bytes_pipe.collect().await.unwrap();
+            let flat: Vec<u8> = chunks.into_iter().flatten().collect();
+            flat
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        use tokio::io::AsyncWriteExt;
+        client.write_all(b"raw bytes").await.unwrap();
+        client.shutdown().await.unwrap();
+
+        let data = handle.await.unwrap();
+        assert_eq!(data, b"raw bytes");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tcp_client_disconnect_mid_stream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            let (stream, peer_addr) = listener.accept().await.unwrap();
+            let (reader, writer) = stream.into_split();
+            let conn = TcpConnection { addr: peer_addr, reader, writer };
+            let (lines_pipe, _writer) = conn.into_lines();
+            lines_pipe.collect().await
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        use tokio::io::AsyncWriteExt;
+        client.write_all(b"hello\n").await.unwrap();
+        drop(client); // disconnect mid-stream
+
+        // Should complete without error (disconnect is just EOF)
+        let result = handle.await.unwrap().unwrap();
+        assert!(result.contains(&"hello".to_string()));
+    }
+
     // Suppress unused warning for the `server` variable in the test above
     #[allow(dead_code)]
     fn _assert_tcp_server_compiles() {

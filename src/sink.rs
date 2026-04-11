@@ -155,7 +155,7 @@ mod tests {
 
     #[tokio::test]
     async fn sink_writer() {
-        let mut output = Vec::<u8>::new();
+        let _output = Vec::<u8>::new();
         // writer() needs a 'static writer, so use a shared buffer
         let buf = Arc::new(tokio::sync::Mutex::new(Vec::<u8>::new()));
         let buf2 = Arc::clone(&buf);

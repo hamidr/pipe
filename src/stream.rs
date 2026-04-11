@@ -40,11 +40,22 @@ impl<B: Send + 'static> Pipe<B> {
     /// Create a pipe from any [`Stream`](futures_core::Stream).
     ///
     /// The resulting pipe is single-use -- cloning and materializing
-    /// both clones will panic.
+    /// both clones returns an error. Uses a 256-element internal
+    /// buffer; use [`from_stream_buffered`](Self::from_stream_buffered)
+    /// to customize.
     pub fn from_stream(stream: impl Stream<Item = B> + Send + 'static) -> Self {
+        Self::from_stream_buffered(stream, DEFAULT_CHUNK_SIZE)
+    }
+
+    /// Create a pipe from a [`Stream`](futures_core::Stream) with a
+    /// custom chunk size for internal buffering.
+    pub fn from_stream_buffered(
+        stream: impl Stream<Item = B> + Send + 'static,
+        chunk_size: usize,
+    ) -> Self {
         Pipe::from_pull_once(PullFromStream {
             stream: Box::pin(stream),
-            chunk_size: DEFAULT_CHUNK_SIZE,
+            chunk_size: chunk_size.max(1),
         })
     }
 }
@@ -76,10 +87,18 @@ impl<B: Send + 'static> Pipe<B> {
     /// Convert this pipe into a [`Stream`](futures_core::Stream).
     ///
     /// Spawns a background task that pulls chunks and sends elements
-    /// one by one through a bounded channel. The task is cancelled
-    /// when the stream is dropped.
+    /// one by one through a bounded channel (capacity 256). The task
+    /// is cancelled when the stream is dropped. Use
+    /// [`into_stream_buffered`](Self::into_stream_buffered) to
+    /// customize the channel capacity.
     pub fn into_stream(self) -> PipeStream<B> {
-        let (tx, rx) = tokio::sync::mpsc::channel(256);
+        self.into_stream_buffered(256)
+    }
+
+    /// Convert this pipe into a [`Stream`](futures_core::Stream)
+    /// with a custom channel capacity for backpressure tuning.
+    pub fn into_stream_buffered(self, buffer_size: usize) -> PipeStream<B> {
+        let (tx, rx) = tokio::sync::mpsc::channel(buffer_size.max(1));
         let mut root = self.into_pull();
         let handle = tokio::spawn(async move {
             loop {

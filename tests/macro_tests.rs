@@ -185,8 +185,7 @@ async fn pipe_gen_once_with_operators() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "generate_once: generator already consumed")]
-async fn pipe_gen_once_panics_on_double_materialize() {
+async fn pipe_gen_once_errors_on_double_materialize() {
     let owned_data = vec![1, 2, 3];
     let pipe = pipe_gen_once!(tx => {
         for item in owned_data {
@@ -195,7 +194,8 @@ async fn pipe_gen_once_panics_on_double_materialize() {
     });
     let clone = pipe.clone();
     let _ = pipe.collect().await;
-    let _ = clone.collect().await;
+    let result = clone.collect().await;
+    assert!(result.is_err(), "second materialization should return an error");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -127,7 +127,7 @@ Pipe::retry(factory, max_retries)      // retry from scratch on error
 Pipe::merge(vec![a, b, c])            // concurrent fan-in
 .merge_with(other)                     // two-pipe merge shorthand
 .broadcast(n, buffer_size)             // fan-out to N consumers
-.broadcast_through(n, buf, transforms) // fan-out + transform + merge
+.broadcast_through(buf, transforms)    // fan-out + transform + merge
 .partition(n, buf, key_fn)             // hash-partition across N branches
 .unzip(buffer_size)                    // Pipe<(A, B)> -> (Pipe<A>, Pipe<B>)
 .concurrently(background)              // run background alongside self
