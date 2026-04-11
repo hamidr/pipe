@@ -193,9 +193,15 @@ impl Pipe<Vec<u8>> {
     /// Split byte buffers into lines (`\n` or `\r\n` delimited).
     ///
     /// Handles lines split across read boundaries. The final line is
-    /// emitted even without a trailing newline. Uses lossy UTF-8
-    /// conversion. Lines longer than 1 MiB return an error; use
+    /// emitted even without a trailing newline. Lines longer than
+    /// 1 MiB return an error; use
     /// [`lines_with_max_len`](Self::lines_with_max_len) to customize.
+    ///
+    /// **Encoding**: uses lossy UTF-8 conversion
+    /// (`String::from_utf8_lossy`). Invalid byte sequences are
+    /// replaced with U+FFFD rather than producing an error. If strict
+    /// UTF-8 validation is required, read raw bytes via
+    /// [`from_reader`](Self::from_reader) and validate manually.
     pub fn lines(self) -> Pipe<String> {
         let parent = self.factory;
         Pipe::from_factory(move || Box::new(PullLines::new(parent())))
