@@ -283,10 +283,10 @@ impl<B: Send + 'static, F: Fn(&B) -> bool + Send + 'static> PullOperator<B> for 
             let mut empty_runs = 0usize;
             loop {
                 match self.child.next_chunk().await? {
-                    Some(chunk) => {
-                        let filtered: Vec<B> = chunk.into_iter().filter(|b| (self.f)(b)).collect();
-                        if !filtered.is_empty() {
-                            return Ok(Some(filtered));
+                    Some(mut chunk) => {
+                        chunk.retain(|b| (self.f)(b));
+                        if !chunk.is_empty() {
+                            return Ok(Some(chunk));
                         }
                         empty_runs += 1;
                         if empty_runs >= YIELD_AFTER_EMPTY {
