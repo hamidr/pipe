@@ -26,6 +26,8 @@ impl<B: Send + 'static> Pipe<B> {
     /// Emit at most one element per `duration`.
     ///
     /// Elements arriving faster than the rate are delayed, not dropped.
+    /// Runs inline (no background task) -- sleeps during pull if the
+    /// rate limit has not elapsed.
     pub fn throttle(self, duration: std::time::Duration) -> Self {
         let parent = self.factory;
         Self::from_factory(move || {

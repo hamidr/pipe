@@ -44,14 +44,17 @@ pub enum WsMessage {
 }
 
 impl WsMessage {
+    /// Returns true if this is a text message.
     pub fn is_text(&self) -> bool {
         matches!(self, WsMessage::Text(_))
     }
 
+    /// Returns true if this is a binary message.
     pub fn is_binary(&self) -> bool {
         matches!(self, WsMessage::Binary(_))
     }
 
+    /// Returns true if this is a close frame.
     pub fn is_close(&self) -> bool {
         matches!(self, WsMessage::Close)
     }

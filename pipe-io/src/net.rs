@@ -80,6 +80,7 @@ impl TcpConnection {
 pub struct TcpWriter(Arc<Mutex<OwnedWriteHalf>>);
 
 impl TcpWriter {
+    /// Write all bytes to the connection. Mutex-protected per call.
     pub async fn write_all(&self, data: &[u8]) -> Result<(), PipeError> {
         self.0
             .lock()

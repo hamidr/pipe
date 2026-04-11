@@ -461,7 +461,6 @@ impl<B: Send + 'static> Pipe<B> {
         Pipe::from_factory(move || {
             let child = parent();
             let key = Arc::clone(&key);
-            let key = Arc::clone(&key);
             Box::new(super::pull_ops::PullGroupAdjacentBy {
                 child,
                 key_fn: Box::new(move |b: &B| key(b)),

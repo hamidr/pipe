@@ -61,7 +61,8 @@ Pipe::generate(|tx| async { ... })     // async generator via Emitter (cloneable
 Pipe::generate_once(|tx| async { ... }) // async generator (single-use, owns captures)
 Pipe::from_reader(reader)              // AsyncRead -> Pipe<Vec<u8>> (8 KiB buffer)
 Pipe::from_reader_sized(reader, size)  // AsyncRead with custom buffer size
-Pipe::from_stream(stream)              // futures::Stream -> Pipe
+Pipe::from_stream(stream)              // futures::Stream -> Pipe (256-element chunks)
+Pipe::from_stream_buffered(stream, n)  // futures::Stream with custom chunk size
 Pipe::from_pull(factory)               // custom PullOperator (cloneable)
 Pipe::from_pull_once(op)               // custom PullOperator (single-use)
 Pipe::bracket(acquire, use_fn, release) // resource-safe pipeline
@@ -155,7 +156,8 @@ Pipe::retry(factory, max_retries)      // retry from scratch on error
 .eval_for_each(f).await?               // async side-effect
 .first().await? / .last().await?       // -> Option<B>
 .into_writer(writer).await?            // drain to AsyncWrite
-.into_stream()                         // -> impl Stream<Item = Result<B>>
+.into_stream()                         // -> impl Stream<Item = Result<B>> (cap 256)
+.into_stream_buffered(n)               // -> Stream with custom channel capacity
 .drain_to(&sink).await?                // consume via Sink
 ```
 
@@ -409,6 +411,62 @@ let a = pipeline.clone().collect().await?;
 let b = pipeline.clone().fold(0, |a, b| a + b).await?;
 let c = pipeline.first().await?;
 ```
+
+## pipe-http
+
+The `pipe-http` crate provides HTTP streaming connectors.
+
+```toml
+[dependencies]
+pipe-http = { git = "https://github.com/hamidr/pipe" }
+```
+
+### SSE (Server-Sent Events)
+
+```rust
+use pipe_http::sse;
+
+// Connect with auto-reconnection and Last-Event-ID resume
+sse::connect("https://example.com/events")
+    .filter(|e| e.event.as_deref() == Some("update"))
+    .map(|e| e.data)
+    .for_each(|data| println!("{data}"))
+    .await?;
+
+// Custom configuration
+let events = sse::connect_with(SseConfig {
+    url: "https://example.com/events".into(),
+    headers: vec![("Authorization".into(), "Bearer ...".into())],
+    reconnect: true,
+    ..Default::default()
+});
+```
+
+Features: W3C EventSource spec-compliant parser, auto-reconnection with
+exponential backoff, Last-Event-ID resume, 16 MiB line buffer limit,
+strict UTF-8 validation, smart retry (5xx only, not 4xx).
+
+### WebSocket
+
+```rust
+use pipe_http::ws;
+
+let (incoming, sender) = ws::connect("wss://example.com/ws");
+
+// Send from any task
+let s = sender.clone();
+tokio::spawn(async move { s.send_text("hello").await });
+
+// Process incoming as a pipe
+incoming
+    .and_then(|m| m.text())
+    .for_each(|text| println!("{text}"))
+    .await?;
+```
+
+Features: lazy connection (established on first pull), cloneable
+channel-based sender, automatic ping/pong, 16 MiB message size limit,
+Text/Binary/Close message types.
 
 ## License
 
