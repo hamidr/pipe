@@ -4,6 +4,18 @@ All notable changes to the pipe workspace are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.2] - 2026-04-14
+
+### Added
+- GitHub Actions CI workflow (fmt, clippy, test on Linux + macOS via Nix)
+- Criterion benchmark suite for core operators (map, filter, flat_map, chunks, fold, merge)
+- CHANGELOG.md covering full version history
+- pipe-grpc in README: install instructions, streaming example, crate ecosystem table
+
+### Changed
+- Synced ADR statuses and TRACKER.md with shipped work
+- Prepared crate metadata for crates.io publishing (version fields, keywords)
+
 ## [0.6.0] - 2026-04-11
 
 ### Added

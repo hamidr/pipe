@@ -3,7 +3,7 @@ members = [".", "pipe-macros", "pipe-io", "pipe-http", "pipe-grpc"]
 
 [package]
 name = "pipe"
-version = "0.6.0"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.85"
 description = "A lazy, effectful streaming library for Rust -- FS2-inspired Pipe<B> with pull-based sources, async transforms, backpressure, and concurrency"
@@ -17,10 +17,10 @@ exclude = ["tests/", "examples/", ".github/", ".direnv/", ".envrc"]
 [dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "time", "net"] }
 futures-core = "0.3"
-pipe-macros = { path = "pipe-macros", version = "0.6.0" }
+pipe-macros = { path = "pipe-macros", version = "0.6.2" }
 
 [dev-dependencies]
-pipe-io = { path = "pipe-io", version = "0.6.0" }
+pipe-io = { path = "pipe-io", version = "0.6.2" }
 proptest = "1"
 tokio-test = "0.4"
 criterion = { version = "0.5", features = ["async_tokio"] }

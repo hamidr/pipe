@@ -1,6 +1,6 @@
 [package]
 name = "pipe-http"
-version = "0.6.0"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.85"
 description = "HTTP connectors for pipe -- SSE source, WebSocket source/sink"
@@ -10,7 +10,7 @@ keywords = ["async", "streaming", "sse", "websocket", "server-sent-events"]
 categories = ["asynchronous", "network-programming", "web-programming"]
 
 [dependencies]
-pipe = { path = "..", version = "0.6.0" }
+pipe = { path = "..", version = "0.6.2" }
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 tokio = { version = "1", features = ["sync", "time", "rt"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }

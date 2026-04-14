@@ -1,6 +1,6 @@
 [package]
 name = "pipe-io"
-version = "0.6.0"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.85"
 description = "I/O constructors for pipe -- TCP, UDP, and file convenience APIs"
@@ -11,5 +11,5 @@ categories = ["asynchronous", "network-programming"]
 exclude = [".github/"]
 
 [dependencies]
-pipe = { path = "..", version = "0.6.0" }
+pipe = { path = "..", version = "0.6.2" }
 tokio = { version = "1", features = ["net", "fs", "io-util", "rt"] }

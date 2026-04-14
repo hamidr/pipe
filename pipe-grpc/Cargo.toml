@@ -10,7 +10,7 @@ keywords = ["async", "streaming", "grpc", "tonic", "protobuf"]
 categories = ["asynchronous", "network-programming"]
 
 [dependencies]
-pipe = { path = "..", version = "0.6.0" }
+pipe = { path = "..", version = "0.6.2" }
 tonic = { version = "0.12", default-features = false, features = ["transport", "channel"] }
 futures-core = "0.3"
 
