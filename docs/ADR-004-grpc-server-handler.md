@@ -1,0 +1,253 @@
+# ADR-004: gRPC Server Handler -- Pipe-Native Service Definitions
+
+**Status**: Proposed
+**Date**: 2026-04-11
+**Supersedes**: --
+**Related**: [ADR-003](ADR-003-grpc-connector.md) (extends gRPC connector with server-side support)
+
+## Context
+
+ADR-003 defined a phased gRPC connector strategy. The client-side
+streaming source (`streaming::from_tonic`) and the server-side response
+adapter (`serve::to_stream`) are both implemented and in use. The serve
+module was added opportunistically -- it was small and immediately useful.
+
+In practice (validated by knot-server, a graph database using pipe-grpc),
+the server-side pattern works but requires significant tonic boilerplate:
+
+1. **Service trait implementation**: Users must implement tonic's generated
+   `#[tonic::async_trait]` trait and call `serve::to_stream(pipe)` at
+   each streaming RPC return site.
+
+2. **Server bootstrap**: TLS configuration, interceptor wiring,
+   graceful shutdown, and `Server::builder()` setup all live in user
+   code. This is ~60 lines of mechanical tonic boilerplate.
+
+3. **Error bridging**: Users manually wrap domain errors into
+   `PipeError::Custom(Box::new(tonic::Status::...))` and rely on
+   `pipe_error_to_status` to unwrap them. The round-trip works but
+   is indirect.
+
+4. **Unary RPCs get no benefit**: Only streaming RPCs use pipe today.
+   The 5 unary RPCs in knot-server are plain `async fn` -- pipe adds
+   nothing there.
+
+The current architecture is correct but split: pipe-grpc is an adapter
+between two worlds rather than a cohesive abstraction. Users must
+understand both tonic's API and pipe's API in full.
+
+### What a server handler layer would provide
+
+A thin declarative layer over tonic that lets users define gRPC services
+in terms of pipe primitives:
+
+| Today (tonic + pipe-grpc) | Proposed (pipe-grpc server) |
+|---------------------------|----------------------------|
+| Implement generated `#[tonic::async_trait]` trait | Declare handlers as closures/functions |
+| `type QueryStream = serve::PipeResponse<T>` | Implicit -- streaming handlers return `Pipe<T>` |
+| Manual `Server::builder().tls_config(...)` | `pipe_grpc::Server::builder().tls(cert, key)` |
+| Manual interceptor wiring | `.interceptor(fn)` on builder |
+| `serve::to_stream(pipe)` at each call site | Automatic for streaming handlers |
+| `pipe_error_to_status` for error mapping | Built into the handler contract |
+
+### Why now
+
+- ADR-003's streaming source and serve adapter are implemented and
+  validated in production (knot-server).
+- The serve module already exists -- this ADR extends it, not replaces it.
+- knot-server has 6 RPCs (1 streaming, 5 unary) providing a concrete
+  test case for the API design.
+- Server-side support was explicitly listed as "not in scope" in ADR-003
+  pending client-side validation. That validation is complete.
+
+### Design tension: thin wrapper vs framework
+
+Two extremes:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Thin builder over tonic | Small API surface, easy to maintain, tonic upgrades are mechanical | Users still see tonic types (Request, Response, Status) |
+| Full framework hiding tonic | Clean pipe-only API, no tonic in user code | Large API surface, version coupling, reimplements tonic features |
+
+Decision: thin wrapper. tonic is good at what it does (transport, codegen,
+HTTP/2). pipe-grpc should eliminate boilerplate, not replace tonic's
+internals. Users who need advanced tonic features (custom codecs, Tower
+layers, health checks) can drop down to tonic directly.
+
+## Decision
+
+Extend pipe-grpc's `serve` module with a server builder API. Tonic
+remains the transport layer. The builder wraps `tonic::transport::Server`
+and accepts standard tonic services for serving.
+
+### Phase 1: Server builder
+
+**Server builder**:
+
+```rust
+use pipe_grpc::serve;
+
+let server = serve::Server::builder()
+    .tls(cert_pem, key_pem)
+    .client_ca(ca_pem)            // optional mTLS
+    .interceptor(auth_interceptor) // tonic interceptor
+    .build();
+
+server
+    .serve("0.0.0.0:50051".parse()?, svc)
+    .with_shutdown(shutdown_signal())
+    .await?;
+```
+
+The builder wraps `tonic::transport::Server` and exposes the subset
+of configuration that most services need. Advanced users bypass the
+builder and use tonic directly with `serve::to_stream`.
+
+**What this does NOT include**:
+
+- Proto codegen -- users still run `tonic-build` and get the generated
+  service trait. pipe-grpc's builder wraps the tonic service, not
+  replaces it.
+- Handler traits or routing -- the generated tonic trait already defines
+  the routing. Users implement it as before. A macro that generates the
+  trait impl from closures is Phase 2.
+
+**Intended usage**:
+
+```rust
+// Users still implement the tonic trait, but the body is simpler:
+#[tonic::async_trait]
+impl MyService for MyServer {
+    type QueryStream = serve::PipeResponse<QueryResponse>;
+
+    async fn query(
+        &self,
+        req: Request<QueryRequest>,
+    ) -> Result<Response<Self::QueryStream>, Status> {
+        let pipe = self.build_query_pipe(req.into_inner())?;
+        Ok(Response::new(serve::to_stream(pipe)))
+        // ^ this part already works today
+    }
+}
+
+// The new part: server bootstrap is simpler
+serve::Server::builder()
+    .tls(cert, key)
+    .interceptor(auth)
+    .build()
+    .serve(addr, MyServiceServer::new(server))
+    .with_shutdown(ctrl_c())
+    .await?;
+```
+
+**Deliverables**:
+
+- `serve::Server` builder with TLS, mTLS, interceptor, and graceful
+  shutdown support
+- `into_tonic_builder()` escape hatch for advanced configuration
+- Integration test: build and serve a tonic service through the builder
+- Migrate knot-server to use the builder as validation
+
+### Phase 2: Handler traits and service macro (deferred)
+
+Handler traits that formalize the two RPC patterns:
+
+```rust
+/// Streaming RPC: request in, pipe of responses out.
+pub trait StreamingHandler<Req, Resp>: Send + Sync + 'static {
+    fn handle(&self, req: Request<Req>) -> Result<Pipe<Resp>, Status>;
+}
+
+/// Unary RPC: request in, single response out.
+pub trait UnaryHandler<Req, Resp>: Send + Sync + 'static {
+    fn handle(
+        &self,
+        req: Request<Req>,
+    ) -> Pin<Box<dyn Future<Output = Result<Response<Resp>, Status>> + Send>>;
+}
+```
+
+And a proc macro that generates the tonic trait impl from handler
+closures, eliminating the async_trait boilerplate entirely:
+
+```rust
+pipe_grpc::service! {
+    proto: my_proto::my_service_server::MyService,
+
+    // Streaming RPC: return Pipe<T>
+    rpc query(req: QueryRequest) -> stream QueryResponse {
+        build_query_pipe(req)?
+    }
+
+    // Unary RPC: return T directly
+    rpc mutate(req: MutateRequest) -> MutateResponse {
+        handle_mutate(req).await?
+    }
+}
+```
+
+This is deferred because:
+- Proc macros over generated code are fragile
+- Phase 1 already eliminates the server bootstrap boilerplate
+- The trait impl boilerplate is mechanical but not large (5-10 lines
+  per RPC)
+- Real usage feedback from Phase 1 will inform whether the macro is
+  worth the complexity
+
+### Not in scope
+
+- **Replacing tonic**: pipe-grpc is a convenience layer over tonic,
+  not a replacement. Dropping tonic would require reimplementing HTTP/2
+  transport, gRPC framing, protobuf codegen integration, service
+  routing, metadata/trailers, and status codes -- roughly the entirety
+  of tonic. tonic remains a hard dependency at every layer (codegen,
+  transport, routing, wire format). This is a deliberate choice: tonic
+  is mature and well-maintained; duplicating it would be high cost for
+  no architectural benefit.
+- **Custom codecs**: pipe-grpc uses tonic's default prost codec.
+  Alternative codecs (flatbuffers, bincode) are tonic-level concerns.
+- **Load balancing / discovery**: tonic's Channel handles this.
+- **Health checks / reflection**: tonic provides these as optional
+  Tower layers. pipe-grpc's builder should forward them, not reimplement.
+- **Client-streaming / bidi handlers**: Server-side receipt of client
+  streams as `Pipe<T>`. Natural extension but deferred until the
+  server builder API is validated with unary + server-streaming.
+
+## Consequences
+
+### Positive
+
+- Eliminates ~60 lines of server bootstrap boilerplate per service
+- Establishes pipe-grpc as a cohesive server framework, not just an
+  adapter library
+- tonic remains the transport -- no reimplementation, no version fork
+- Streaming and unary handlers share a consistent builder API
+- Users who outgrow the builder can drop to raw tonic without rewriting
+  their handlers (the trait impls are standard tonic)
+- Validates the pattern before investing in the Phase 2 macro
+
+### Negative
+
+- Another abstraction layer over tonic -- users debugging transport
+  issues must look through pipe-grpc to tonic. Mitigated by keeping
+  the layer thin and transparent (builder just delegates).
+- Server builder duplicates tonic's `Server::builder` surface. If
+  tonic adds new configuration options, pipe-grpc must forward them.
+  Mitigated by exposing an escape hatch (`into_tonic_builder()`).
+- Phase 2 macro is speculative. If Phase 1 proves sufficient, the
+  macro may never be needed. This is acceptable -- deferral is the
+  point.
+
+### Risks
+
+- **tonic version coupling**: The builder wraps tonic's `Server` type.
+  tonic 0.12 -> 0.13 breaking changes would require pipe-grpc updates.
+  Mitigation: same as ADR-003 -- pin minor version, keep wrapper thin.
+- **Feature creep**: Pressure to add every tonic feature to the builder
+  (connection limits, keepalive, HTTP/2 tuning). Mitigation: expose
+  `into_tonic_builder()` for advanced use and keep the pipe-grpc
+  builder minimal (TLS, interceptor, graceful shutdown).
+- **Macro complexity** (Phase 2): Proc macros over tonic-generated
+  code may break on tonic version bumps if generated trait signatures
+  change. Mitigation: defer until Phase 1 proves the handler pattern,
+  then decide if the ergonomic gain justifies the maintenance cost.
