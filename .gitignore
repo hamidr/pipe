@@ -1,2 +1,4 @@
 target/
 IDEAS.md
+.direnv/
+.envrc
