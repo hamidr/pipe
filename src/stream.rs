@@ -168,9 +168,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pipe_to_stream() {
-        let stream = Pipe::from_iter(vec![1, 2, 3])
-            .map(|x| x * 10)
-            .into_stream();
+        let stream = Pipe::from_iter(vec![1, 2, 3]).map(|x| x * 10).into_stream();
 
         let items: Vec<i64> = collect_stream(stream)
             .await

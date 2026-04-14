@@ -3,9 +3,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use axum::Router;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
-use axum::Router;
 use futures_core::Stream;
 use pipe_http::sse::{self, SseConfig, SseEvent};
 
@@ -47,10 +47,7 @@ fn counting_stream(n: usize) -> CountingStream {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn basic_sse_stream() {
-    let app = Router::new().route(
-        "/events",
-        get(|| async { Sse::new(counting_stream(5)) }),
-    );
+    let app = Router::new().route("/events", get(|| async { Sse::new(counting_stream(5)) }));
     let (addr, _server) = start_server(app).await;
 
     let events: Vec<SseEvent> = sse::connect(format!("http://{addr}/events"))
@@ -69,10 +66,7 @@ async fn basic_sse_stream() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sse_with_pipe_operators() {
-    let app = Router::new().route(
-        "/events",
-        get(|| async { Sse::new(counting_stream(10)) }),
-    );
+    let app = Router::new().route("/events", get(|| async { Sse::new(counting_stream(10)) }));
     let (addr, _server) = start_server(app).await;
 
     let result: Vec<i64> = sse::connect(format!("http://{addr}/events"))
@@ -90,9 +84,7 @@ async fn sse_with_pipe_operators() {
 async fn sse_cancellation_via_drop() {
     let app = Router::new().route(
         "/events",
-        get(|| async {
-            Sse::new(counting_stream(10000)).keep_alive(KeepAlive::default())
-        }),
+        get(|| async { Sse::new(counting_stream(10000)).keep_alive(KeepAlive::default()) }),
     );
     let (addr, _server) = start_server(app).await;
 
@@ -174,8 +166,5 @@ async fn sse_custom_headers() {
 
     let _ = sse::connect_with(config).take(1).collect().await;
 
-    assert_eq!(
-        captured.lock().unwrap().as_deref(),
-        Some("test-value")
-    );
+    assert_eq!(captured.lock().unwrap().as_deref(), Some("test-value"));
 }

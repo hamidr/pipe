@@ -147,13 +147,10 @@ pub fn connect(url: impl Into<String>) -> (Pipe<WsMessage>, WsSender) {
         ws_config.max_message_size = Some(MAX_MESSAGE_SIZE);
         ws_config.max_frame_size = Some(MAX_MESSAGE_SIZE);
 
-        let (stream, _response) = tokio_tungstenite::connect_async_with_config(
-            &url,
-            Some(ws_config),
-            false,
-        )
-        .await
-        .map_err(|e| PipeError::Custom(Box::new(e)))?;
+        let (stream, _response) =
+            tokio_tungstenite::connect_async_with_config(&url, Some(ws_config), false)
+                .await
+                .map_err(|e| PipeError::Custom(Box::new(e)))?;
 
         let (write_half, mut read_half) = futures_util::StreamExt::split(stream);
         let write_half = Arc::new(tokio::sync::Mutex::new(write_half));
@@ -165,14 +162,12 @@ pub fn connect(url: impl Into<String>) -> (Pipe<WsMessage>, WsSender) {
             use futures_util::SinkExt;
             while let Some(msg) = outgoing_rx.recv().await {
                 let ws_msg = match msg {
-                    OutgoingMsg::Text(s) => {
-                        tokio_tungstenite::tungstenite::Message::text(s)
-                    }
-                    OutgoingMsg::Binary(b) => {
-                        tokio_tungstenite::tungstenite::Message::binary(b)
-                    }
+                    OutgoingMsg::Text(s) => tokio_tungstenite::tungstenite::Message::text(s),
+                    OutgoingMsg::Binary(b) => tokio_tungstenite::tungstenite::Message::binary(b),
                     OutgoingMsg::Close => {
-                        let _ = writer.lock().await
+                        let _ = writer
+                            .lock()
+                            .await
                             .send(tokio_tungstenite::tungstenite::Message::Close(None))
                             .await;
                         return;

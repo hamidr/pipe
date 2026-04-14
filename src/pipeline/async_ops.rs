@@ -5,12 +5,15 @@ use std::sync::Arc;
 
 use crate::pull::{PipeError, PullOperator};
 
-use super::pull_ops::{PullEvalFilter, PullEvalMap, PullEvalTap};
 use super::Pipe;
+use super::pull_ops::{PullEvalFilter, PullEvalMap, PullEvalTap};
 
 impl<B: Send + 'static> Pipe<B> {
     /// Async per-element transform (like `map` but with `Future`).
-    pub fn eval_map<C: Send + 'static, Fut: Future<Output = Result<C, PipeError>> + Send + 'static>(
+    pub fn eval_map<
+        C: Send + 'static,
+        Fut: Future<Output = Result<C, PipeError>> + Send + 'static,
+    >(
         self,
         f: impl Fn(B) -> Fut + Send + Sync + 'static,
     ) -> Pipe<C> {
@@ -70,7 +73,10 @@ impl<B: Send + 'static> Pipe<B> {
     /// Processes up to `concurrency` elements concurrently. Results are
     /// emitted in the same order as the input. Uses a background task
     /// pool connected by channels.
-    pub fn par_eval_map<C: Send + 'static, Fut: Future<Output = Result<C, PipeError>> + Send + 'static>(
+    pub fn par_eval_map<
+        C: Send + 'static,
+        Fut: Future<Output = Result<C, PipeError>> + Send + 'static,
+    >(
         self,
         concurrency: usize,
         f: impl Fn(B) -> Fut + Send + Sync + 'static,
@@ -137,7 +143,10 @@ impl<B: Send + 'static> Pipe<B> {
                 }
             });
 
-            Box::new(crate::channel::TaskResultReceiver::new(out_rx, handle.abort_handle()))
+            Box::new(crate::channel::TaskResultReceiver::new(
+                out_rx,
+                handle.abort_handle(),
+            ))
         })
     }
 
@@ -202,7 +211,10 @@ impl<B: Send + 'static> Pipe<B> {
                 }
             });
 
-            Box::new(crate::channel::TaskResultReceiver::new(out_rx, handle.abort_handle()))
+            Box::new(crate::channel::TaskResultReceiver::new(
+                out_rx,
+                handle.abort_handle(),
+            ))
         })
     }
 }

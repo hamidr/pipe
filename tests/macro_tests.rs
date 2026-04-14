@@ -195,7 +195,10 @@ async fn pipe_gen_once_errors_on_double_materialize() {
     let clone = pipe.clone();
     let _ = pipe.collect().await;
     let result = clone.collect().await;
-    assert!(result.is_err(), "second materialization should return an error");
+    assert!(
+        result.is_err(),
+        "second materialization should return an error"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -237,7 +240,9 @@ async fn eval_for_each_with_async_io() {
 }
 
 #[pipe::pipe_fn]
-async fn triple(x: i64) -> i64 { x * 3 }
+async fn triple(x: i64) -> i64 {
+    x * 3
+}
 
 #[tokio::test]
 async fn pipe_fn_basic() {
@@ -246,7 +251,9 @@ async fn pipe_fn_basic() {
 }
 
 #[pipe::pipe_fn]
-async fn add_prefix(s: String) -> String { format!("hello_{s}") }
+async fn add_prefix(s: String) -> String {
+    format!("hello_{s}")
+}
 
 #[tokio::test]
 async fn pipe_fn_type_change() {
@@ -259,7 +266,9 @@ async fn pipe_fn_type_change() {
 }
 
 #[pipe::pipe_fn]
-async fn to_upper_case(s: String) -> String { s.to_uppercase() }
+async fn to_upper_case(s: String) -> String {
+    s.to_uppercase()
+}
 
 #[tokio::test]
 async fn pipe_fn_chained() {

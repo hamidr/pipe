@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use crate::pull::PipeError;
 
-use super::pull_ops::{BracketState, PullBracket, PullHandleError, PullOnFinalize, PullRetry};
 use super::Pipe;
+use super::pull_ops::{BracketState, PullBracket, PullHandleError, PullOnFinalize, PullRetry};
 
 impl<B: Send + 'static> Pipe<B> {
     /// Acquire a resource, build a pipe from it, and guarantee cleanup.
@@ -25,10 +25,11 @@ impl<B: Send + 'static> Pipe<B> {
     /// )
     /// ```
     pub fn bracket<R: Send + Sync + 'static>(
-        acquire: impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, PipeError>> + Send>>
-            + Send
-            + Sync
-            + 'static,
+        acquire: impl Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<R, PipeError>> + Send>,
+        > + Send
+        + Sync
+        + 'static,
         use_resource: impl Fn(Arc<R>) -> Pipe<B> + Send + Sync + 'static,
         release: impl Fn(Arc<R>) + Send + Sync + 'static,
     ) -> Self {
@@ -40,7 +41,11 @@ impl<B: Send + 'static> Pipe<B> {
             let use_resource = Arc::clone(&use_resource);
             let release = Arc::clone(&release);
             Box::new(PullBracket {
-                state: BracketState::Pending { acquire, use_resource, release },
+                state: BracketState::Pending {
+                    acquire,
+                    use_resource,
+                    release,
+                },
             })
         })
     }
@@ -55,7 +60,10 @@ impl<B: Send + 'static> Pipe<B> {
         Self::from_factory(move || {
             let child = parent();
             let f = Arc::clone(&f);
-            Box::new(PullOnFinalize { child, finalizer: Some(f) })
+            Box::new(PullOnFinalize {
+                child,
+                finalizer: Some(f),
+            })
         })
     }
 

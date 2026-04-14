@@ -73,7 +73,9 @@ impl<B: Send + 'static> Clone for Pipe<B> {
 
 impl<B: Send + 'static> Pipe<B> {
     /// Internal: create a pipe from a factory closure.
-    pub(crate) fn from_factory(f: impl Fn() -> Box<dyn PullOperator<B>> + Send + Sync + 'static) -> Self {
+    pub(crate) fn from_factory(
+        f: impl Fn() -> Box<dyn PullOperator<B>> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             factory: Arc::new(f),
         }
@@ -136,7 +138,10 @@ mod tests {
 
     #[tokio::test]
     async fn reduce_sum() {
-        let sum = Pipe::from_iter(1..=5i64).reduce(|a, b| a + b).await.unwrap();
+        let sum = Pipe::from_iter(1..=5i64)
+            .reduce(|a, b| a + b)
+            .await
+            .unwrap();
         assert_eq!(sum, Some(15));
     }
 
@@ -151,7 +156,10 @@ mod tests {
 
     #[tokio::test]
     async fn reduce_single() {
-        let result = Pipe::from_iter(vec![42i64]).reduce(|a, b| a + b).await.unwrap();
+        let result = Pipe::from_iter(vec![42i64])
+            .reduce(|a, b| a + b)
+            .await
+            .unwrap();
         assert_eq!(result, Some(42));
     }
 
@@ -654,8 +662,8 @@ mod tests {
     #[tokio::test]
     async fn retry_recovers_from_failure() {
         use std::sync::{
-            atomic::{AtomicUsize, Ordering},
             Arc,
+            atomic::{AtomicUsize, Ordering},
         };
         let attempt = Arc::new(AtomicUsize::new(0));
 
@@ -666,11 +674,7 @@ mod tests {
                 if n < 2 {
                     // First two attempts fail after yielding some data
                     Pipe::from_iter(vec![1, 2]).eval_map(move |x| async move {
-                        if x == 2 {
-                            Err("fail".into())
-                        } else {
-                            Ok(x)
-                        }
+                        if x == 2 { Err("fail".into()) } else { Ok(x) }
                     })
                 } else {
                     // Third attempt succeeds
@@ -824,8 +828,10 @@ mod tests {
 
     #[tokio::test]
     async fn clone_with_scan_independent_state() {
-        let pipe = Pipe::from_iter(vec![1, 2, 3])
-            .scan(0i64, |acc, x| { *acc += x; *acc });
+        let pipe = Pipe::from_iter(vec![1, 2, 3]).scan(0i64, |acc, x| {
+            *acc += x;
+            *acc
+        });
 
         let clone = pipe.clone();
 
@@ -867,9 +873,7 @@ mod tests {
             || Box::pin(async { Ok(()) }),
             |_| {
                 Pipe::from_iter(vec![1i64, 2])
-                    .eval_map(|x| async move {
-                        if x == 2 { Err("boom".into()) } else { Ok(x) }
-                    })
+                    .eval_map(|x| async move { if x == 2 { Err("boom".into()) } else { Ok(x) } })
             },
             move |_| released2.store(true, Ordering::SeqCst),
         )
@@ -1030,11 +1034,7 @@ mod tests {
     async fn par_eval_map_propagates_error() {
         let result = Pipe::from_iter(1..=5)
             .par_eval_map(2, |x| async move {
-                if x == 3 {
-                    Err("boom".into())
-                } else {
-                    Ok(x)
-                }
+                if x == 3 { Err("boom".into()) } else { Ok(x) }
             })
             .collect()
             .await;
@@ -1137,10 +1137,7 @@ mod tests {
             .collect()
             .await
             .unwrap();
-        assert_eq!(
-            result,
-            vec![vec![1, 2, 3], vec![2, 3, 4], vec![3, 4, 5]]
-        );
+        assert_eq!(result, vec![vec![1, 2, 3], vec![2, 3, 4], vec![3, 4, 5]]);
     }
 
     #[tokio::test]
@@ -1221,7 +1218,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             result,
-            vec![(1, vec![1, 1]), (2, vec![2, 2, 2]), (3, vec![3]), (1, vec![1, 1])]
+            vec![
+                (1, vec![1, 1]),
+                (2, vec![2, 2, 2]),
+                (3, vec![3]),
+                (1, vec![1, 1])
+            ]
         );
     }
 
@@ -1298,11 +1300,7 @@ mod tests {
 
     #[tokio::test]
     async fn intersperse_empty() {
-        let result = Pipe::<i64>::empty()
-            .intersperse(0)
-            .collect()
-            .await
-            .unwrap();
+        let result = Pipe::<i64>::empty().intersperse(0).collect().await.unwrap();
         assert!(result.is_empty());
     }
 
@@ -1357,12 +1355,18 @@ mod tests {
     async fn attempt_catches_errors() {
         use crate::pull::{ChunkFut, PullOperator};
 
-        struct FailAfterOne { yielded: bool }
+        struct FailAfterOne {
+            yielded: bool,
+        }
         impl PullOperator<i64> for FailAfterOne {
             fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
                 Box::pin(async move {
-                    if self.yielded { Err("boom".into()) }
-                    else { self.yielded = true; Ok(Some(vec![1])) }
+                    if self.yielded {
+                        Err("boom".into())
+                    } else {
+                        self.yielded = true;
+                        Ok(Some(vec![1]))
+                    }
                 })
             }
         }
@@ -1487,19 +1491,43 @@ mod tests {
     #[tokio::test]
     async fn empty_pipe_through_operators() {
         let empty: Pipe<i64> = Pipe::empty();
-        assert_eq!(empty.clone().map(|x| x * 2).collect().await.unwrap(), Vec::<i64>::new());
-        assert_eq!(empty.clone().filter(|_| true).collect().await.unwrap(), Vec::<i64>::new());
-        assert_eq!(empty.clone().take(5).collect().await.unwrap(), Vec::<i64>::new());
-        assert_eq!(empty.clone().skip(5).collect().await.unwrap(), Vec::<i64>::new());
+        assert_eq!(
+            empty.clone().map(|x| x * 2).collect().await.unwrap(),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            empty.clone().filter(|_| true).collect().await.unwrap(),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            empty.clone().take(5).collect().await.unwrap(),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            empty.clone().skip(5).collect().await.unwrap(),
+            Vec::<i64>::new()
+        );
         assert_eq!(empty.clone().fold(0, |a, b| a + b).await.unwrap(), 0);
         assert_eq!(empty.clone().count().await.unwrap(), 0);
         assert_eq!(empty.clone().first().await.unwrap(), None);
         assert_eq!(empty.clone().last().await.unwrap(), None);
         assert_eq!(empty.clone().reduce(|a, b| a + b).await.unwrap(), None);
-        assert_eq!(empty.clone().chunks(3).collect().await.unwrap(), Vec::<Vec<i64>>::new());
-        assert_eq!(empty.clone().enumerate().collect().await.unwrap(), Vec::<(usize, i64)>::new());
-        assert_eq!(empty.clone().distinct().collect().await.unwrap(), Vec::<i64>::new());
-        assert_eq!(empty.clone().changes().collect().await.unwrap(), Vec::<i64>::new());
+        assert_eq!(
+            empty.clone().chunks(3).collect().await.unwrap(),
+            Vec::<Vec<i64>>::new()
+        );
+        assert_eq!(
+            empty.clone().enumerate().collect().await.unwrap(),
+            Vec::<(usize, i64)>::new()
+        );
+        assert_eq!(
+            empty.clone().distinct().collect().await.unwrap(),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            empty.clone().changes().collect().await.unwrap(),
+            Vec::<i64>::new()
+        );
     }
 
     #[tokio::test]
@@ -1575,7 +1603,9 @@ mod tests {
     async fn error_propagation_through_scan() {
         use crate::pull::{ChunkFut, PullOperator};
 
-        struct FailAfterTwo { count: usize }
+        struct FailAfterTwo {
+            count: usize,
+        }
         impl PullOperator<i64> for FailAfterTwo {
             fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
                 Box::pin(async move {
@@ -1590,7 +1620,10 @@ mod tests {
         }
 
         let result = Pipe::from_pull_once(FailAfterTwo { count: 0 })
-            .scan(0i64, |acc, x| { *acc += x; *acc })
+            .scan(0i64, |acc, x| {
+                *acc += x;
+                *acc
+            })
             .collect()
             .await;
         assert!(result.is_err());

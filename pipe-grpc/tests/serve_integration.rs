@@ -8,8 +8,8 @@ pub mod pipe_grpc_test {
     tonic::include_proto!("pipe_grpc_test");
 }
 
-use pipe_grpc_test::test_streaming_server::{TestStreaming, TestStreamingServer};
 use pipe_grpc_test::test_streaming_client::TestStreamingClient;
+use pipe_grpc_test::test_streaming_server::{TestStreaming, TestStreamingServer};
 use pipe_grpc_test::{StreamItem, StreamRequest};
 
 #[derive(Default)]
@@ -58,11 +58,10 @@ async fn pipe_backed_server_streams_all_items() {
         .await
         .unwrap();
 
-    let items: Vec<StreamItem> =
-        pipe_grpc::streaming::from_tonic(response.into_inner())
-            .collect()
-            .await
-            .unwrap();
+    let items: Vec<StreamItem> = pipe_grpc::streaming::from_tonic(response.into_inner())
+        .collect()
+        .await
+        .unwrap();
 
     assert_eq!(items.len(), 5);
     for (i, item) in items.iter().enumerate() {
@@ -83,11 +82,10 @@ async fn pipe_backed_server_handles_empty() {
         .await
         .unwrap();
 
-    let items: Vec<StreamItem> =
-        pipe_grpc::streaming::from_tonic(response.into_inner())
-            .collect()
-            .await
-            .unwrap();
+    let items: Vec<StreamItem> = pipe_grpc::streaming::from_tonic(response.into_inner())
+        .collect()
+        .await
+        .unwrap();
 
     assert!(items.is_empty());
 }
@@ -126,12 +124,11 @@ async fn client_take_cancels_server_pipe() {
         .await
         .unwrap();
 
-    let items: Vec<StreamItem> =
-        pipe_grpc::streaming::from_tonic(response.into_inner())
-            .take(3)
-            .collect()
-            .await
-            .unwrap();
+    let items: Vec<StreamItem> = pipe_grpc::streaming::from_tonic(response.into_inner())
+        .take(3)
+        .collect()
+        .await
+        .unwrap();
 
     assert_eq!(items.len(), 3);
 }

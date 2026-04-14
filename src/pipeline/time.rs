@@ -1,7 +1,7 @@
 //! Time-based operators: timeout, throttle, debounce, chunks_timeout.
 
-use super::pull_ops::{PullThrottle, PullTimeout};
 use super::Pipe;
+use super::pull_ops::{PullThrottle, PullTimeout};
 
 impl<B: Send + 'static> Pipe<B> {
     /// Fail if a single pull takes longer than `duration`.
@@ -98,7 +98,10 @@ impl<B: Send + 'static> Pipe<B> {
                 }
             });
 
-            Box::new(crate::channel::TaskResultReceiver::new(rx, handle.abort_handle()))
+            Box::new(crate::channel::TaskResultReceiver::new(
+                rx,
+                handle.abort_handle(),
+            ))
         })
     }
 
@@ -107,11 +110,7 @@ impl<B: Send + 'static> Pipe<B> {
     /// Collects up to `max_size` elements into a `Vec<B>`. If the
     /// deadline elapses before the batch is full, flushes whatever
     /// has accumulated. Spawns a background task at materialization.
-    pub fn chunks_timeout(
-        self,
-        max_size: usize,
-        timeout: std::time::Duration,
-    ) -> Pipe<Vec<B>> {
+    pub fn chunks_timeout(self, max_size: usize, timeout: std::time::Duration) -> Pipe<Vec<B>> {
         let parent = self.factory;
         Pipe::from_factory(move || {
             let (tx, rx) = tokio::sync::mpsc::channel::<Vec<B>>(2);
@@ -127,7 +126,9 @@ impl<B: Send + 'static> Pipe<B> {
                         // Flush any complete batches already buffered
                         while batch.len() >= max_size {
                             let ready = batch.drain(..max_size).collect();
-                            if tx.send(ready).await.is_err() { return; }
+                            if tx.send(ready).await.is_err() {
+                                return;
+                            }
                         }
 
                         tokio::select! {

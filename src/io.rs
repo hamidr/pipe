@@ -108,7 +108,8 @@ impl PullOperator<String> for PullLines {
                     }
                     if self.remainder.len() > self.max_line_len {
                         return Err(PipeError::Custom(
-                            format!("line exceeds max length of {} bytes", self.max_line_len).into(),
+                            format!("line exceeds max length of {} bytes", self.max_line_len)
+                                .into(),
                         ));
                     }
                     let line = String::from_utf8_lossy(&self.remainder).into_owned();
@@ -126,17 +127,16 @@ impl PullOperator<String> for PullLines {
                             && !self.remainder.contains(&b'\n')
                         {
                             return Err(PipeError::Custom(
-                                format!(
-                                    "line exceeds max length of {} bytes",
-                                    self.max_line_len
-                                )
-                                .into(),
+                                format!("line exceeds max length of {} bytes", self.max_line_len)
+                                    .into(),
                             ));
                         }
 
                         let mut lines = Vec::new();
                         let mut start = 0;
-                        while let Some(rel_pos) = self.remainder[start..].iter().position(|&b| b == b'\n') {
+                        while let Some(rel_pos) =
+                            self.remainder[start..].iter().position(|&b| b == b'\n')
+                        {
                             let newline = start + rel_pos;
                             // Strip \r\n or \n
                             let end = if newline > start && self.remainder[newline - 1] == b'\r' {
@@ -221,7 +221,10 @@ impl<B: AsRef<[u8]> + Send + 'static> Pipe<B> {
     /// Drain this pipe into any [`AsyncWrite`] sink.
     ///
     /// Returns the total number of bytes written. Flushes on completion.
-    pub async fn into_writer(self, writer: impl AsyncWrite + Unpin + Send) -> Result<u64, PipeError> {
+    pub async fn into_writer(
+        self,
+        writer: impl AsyncWrite + Unpin + Send,
+    ) -> Result<u64, PipeError> {
         let mut root = self.into_pull();
         drain_to_writer(&mut *root, writer).await
     }
@@ -315,13 +318,10 @@ mod tests {
     #[tokio::test]
     async fn writer_sink_bytes() {
         let mut output = Vec::<u8>::new();
-        let written = Pipe::from_iter(vec![
-            vec![1u8, 2, 3],
-            vec![4, 5],
-        ])
-        .into_writer(&mut output)
-        .await
-        .unwrap();
+        let written = Pipe::from_iter(vec![vec![1u8, 2, 3], vec![4, 5]])
+            .into_writer(&mut output)
+            .await
+            .unwrap();
         assert_eq!(output, vec![1, 2, 3, 4, 5]);
         assert_eq!(written, 5);
     }
@@ -350,9 +350,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "LINE1\nLINE2\nLINE3\n"
-        );
+        assert_eq!(String::from_utf8(output).unwrap(), "LINE1\nLINE2\nLINE3\n");
     }
 }

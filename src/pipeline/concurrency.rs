@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use crate::pull::{PipeError, PullOperator, PullZip};
 
-use super::pull_ops::{BroadcastReceiver, GuardedPull, LazyFanOut, LazyPartition, PartitionReceiver, SharedAbort};
 use super::Pipe;
+use super::pull_ops::{
+    BroadcastReceiver, GuardedPull, LazyFanOut, LazyPartition, PartitionReceiver, SharedAbort,
+};
 
 /// Drain a PullOperator into a chunk-level channel, cancelling on consumer drop.
 pub(crate) async fn drain_to_channel<B: Send + 'static>(
@@ -19,10 +21,15 @@ pub(crate) async fn drain_to_channel<B: Send + 'static>(
         };
         match result {
             Ok(Some(chunk)) => {
-                if tx.send(Ok(chunk)).await.is_err() { break; }
+                if tx.send(Ok(chunk)).await.is_err() {
+                    break;
+                }
             }
             Ok(None) => break,
-            Err(e) => { let _ = tx.send(Err(e)).await; break; }
+            Err(e) => {
+                let _ = tx.send(Err(e)).await;
+                break;
+            }
         }
     }
 }
@@ -36,13 +43,15 @@ impl<B: Send + 'static> Pipe<B> {
     pub fn prefetch(self, n: usize) -> Self {
         let parent = self.factory;
         Self::from_factory(move || {
-            let (tx, rx) =
-                tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(n.max(1));
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(n.max(1));
             let mut root = parent();
             let handle = tokio::spawn(async move {
                 drain_to_channel(&mut *root, &tx).await;
             });
-            Box::new(crate::channel::ChunkResultReceiver::new(rx, handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(
+                rx,
+                handle.abort_handle(),
+            ))
         })
     }
 
@@ -301,7 +310,10 @@ impl<B: Send + 'static> Pipe<Pipe<B>> {
                 }
             });
 
-            Box::new(crate::channel::ChunkResultReceiver::new(out_rx, handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(
+                out_rx,
+                handle.abort_handle(),
+            ))
         })
     }
 
@@ -316,8 +328,7 @@ impl<B: Send + 'static> Pipe<Pipe<B>> {
     pub fn par_join_unbounded(self) -> Pipe<B> {
         let parent = self.factory;
         Pipe::from_factory(move || {
-            let (out_tx, out_rx) =
-                tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(16);
+            let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Result<Vec<B>, PipeError>>(16);
             let mut outer = parent();
 
             let handle = tokio::spawn(async move {
@@ -345,7 +356,10 @@ impl<B: Send + 'static> Pipe<Pipe<B>> {
                 }
             });
 
-            Box::new(crate::channel::ChunkResultReceiver::new(out_rx, handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(
+                out_rx,
+                handle.abort_handle(),
+            ))
         })
     }
 }

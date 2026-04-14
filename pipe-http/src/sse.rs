@@ -187,9 +187,7 @@ async fn read_event_stream(
         match chunk {
             Some(Ok(bytes)) => {
                 let text = std::str::from_utf8(&bytes).map_err(|e| {
-                    PipeError::Custom(
-                        format!("SSE stream contains invalid UTF-8: {e}").into(),
-                    )
+                    PipeError::Custom(format!("SSE stream contains invalid UTF-8: {e}").into())
                 })?;
                 buffer.push_str(text);
             }
@@ -373,7 +371,10 @@ mod tests {
 
     #[test]
     fn parse_field_strips_single_leading_space() {
-        assert_eq!(parse_field("data:  two spaces"), Some(("data", " two spaces")));
+        assert_eq!(
+            parse_field("data:  two spaces"),
+            Some(("data", " two spaces"))
+        );
     }
 
     #[test]

@@ -3,9 +3,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use crate::pull::{
-    ArcSource, PipeError, PullIterate, PullOperator, PullSource, PullUnfold,
-};
+use crate::pull::{ArcSource, PipeError, PullIterate, PullOperator, PullSource, PullUnfold};
 
 use super::pull_ops::PullRepeatWith;
 use super::{Emitter, Pipe};
@@ -100,13 +98,12 @@ impl<B: Send + 'static> Pipe<B> {
     pub fn from_pull_once(op: impl PullOperator<B> + 'static) -> Self {
         let slot: Arc<std::sync::Mutex<Option<Box<dyn PullOperator<B>>>>> =
             Arc::new(std::sync::Mutex::new(Some(Box::new(op))));
-        Self::from_factory(move || {
-            match slot.lock().unwrap().take() {
-                Some(op) => op,
-                None => Box::new(crate::pull::ErrorSource::new(
-                    PipeError::Custom("from_pull_once: operator already consumed (Pipe was cloned and both materialized)".into()),
-                )),
-            }
+        Self::from_factory(move || match slot.lock().unwrap().take() {
+            Some(op) => op,
+            None => Box::new(crate::pull::ErrorSource::new(PipeError::Custom(
+                "from_pull_once: operator already consumed (Pipe was cloned and both materialized)"
+                    .into(),
+            ))),
         })
     }
 
@@ -124,9 +121,7 @@ impl<B: Send + 'static> Pipe<B> {
     ///     Ok(())
     /// });
     /// ```
-    pub fn generate<Fut>(
-        f: impl Fn(Emitter<B>) -> Fut + Send + Sync + 'static,
-    ) -> Self
+    pub fn generate<Fut>(f: impl Fn(Emitter<B>) -> Fut + Send + Sync + 'static) -> Self
     where
         Fut: Future<Output = Result<(), PipeError>> + Send + 'static,
     {
@@ -140,7 +135,10 @@ impl<B: Send + 'static> Pipe<B> {
                     let _ = tx.send(Err(e)).await;
                 }
             });
-            Box::new(crate::channel::ChunkResultReceiver::new(rx, handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(
+                rx,
+                handle.abort_handle(),
+            ))
         })
     }
 
@@ -159,21 +157,21 @@ impl<B: Send + 'static> Pipe<B> {
     ///     }
     /// });
     /// ```
-    pub fn generate_once<Fut>(
-        f: impl FnOnce(Emitter<B>) -> Fut + Send + 'static,
-    ) -> Self
+    pub fn generate_once<Fut>(f: impl FnOnce(Emitter<B>) -> Fut + Send + 'static) -> Self
     where
         Fut: Future<Output = Result<(), PipeError>> + Send + 'static,
     {
         type BoxedGen<B> = Box<
-            dyn FnOnce(Emitter<B>) -> std::pin::Pin<
-                Box<dyn Future<Output = Result<(), PipeError>> + Send>,
-            > + Send,
+            dyn FnOnce(
+                    Emitter<B>,
+                )
+                    -> std::pin::Pin<Box<dyn Future<Output = Result<(), PipeError>> + Send>>
+                + Send,
         >;
         let slot: Arc<std::sync::Mutex<Option<BoxedGen<B>>>> =
-            Arc::new(std::sync::Mutex::new(Some(
-                Box::new(move |emitter| Box::pin(f(emitter))),
-            )));
+            Arc::new(std::sync::Mutex::new(Some(Box::new(move |emitter| {
+                Box::pin(f(emitter))
+            }))));
         Self::from_factory(move || {
             let f = match slot.lock().unwrap().take() {
                 Some(f) => f,
@@ -188,7 +186,10 @@ impl<B: Send + 'static> Pipe<B> {
                     let _ = tx.send(Err(e)).await;
                 }
             });
-            Box::new(crate::channel::ChunkResultReceiver::new(rx, handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(
+                rx,
+                handle.abort_handle(),
+            ))
         })
     }
 }

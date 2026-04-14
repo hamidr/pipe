@@ -84,18 +84,13 @@ impl<B: Send + 'static> Sink<B, Option<B>> {
 impl<B: Send + 'static> Sink<B, ()> {
     /// Sink that discards all elements (drains the pipe).
     pub fn drain() -> Self {
-        Self::new(|pipe| async {
-            pipe.for_each(|_| {}).await
-        })
+        Self::new(|pipe| async { pipe.for_each(|_| {}).await })
     }
 }
 
 impl<B: Send + 'static> Pipe<B> {
     /// Consume this pipe with a [`Sink`].
-    pub async fn drain_to<R: Send + 'static>(
-        self,
-        sink: &Sink<B, R>,
-    ) -> Result<R, PipeError> {
+    pub async fn drain_to<R: Send + 'static>(self, sink: &Sink<B, R>) -> Result<R, PipeError> {
         sink.run(self).await
     }
 }
@@ -107,7 +102,10 @@ mod tests {
     #[tokio::test]
     async fn sink_collect() {
         let sink = Sink::collect();
-        let result = Pipe::from_iter(vec![1, 2, 3]).drain_to(&sink).await.unwrap();
+        let result = Pipe::from_iter(vec![1, 2, 3])
+            .drain_to(&sink)
+            .await
+            .unwrap();
         assert_eq!(result, vec![1, 2, 3]);
     }
 
@@ -135,11 +133,12 @@ mod tests {
         let seen2 = seen.clone();
         let sink = Sink::new(move |pipe: Pipe<i64>| {
             let seen = seen2.clone();
-            async move {
-                pipe.for_each(move |x| seen.lock().unwrap().push(x)).await
-            }
+            async move { pipe.for_each(move |x| seen.lock().unwrap().push(x)).await }
         });
-        Pipe::from_iter(vec![1, 2, 3]).drain_to(&sink).await.unwrap();
+        Pipe::from_iter(vec![1, 2, 3])
+            .drain_to(&sink)
+            .await
+            .unwrap();
         assert_eq!(*seen.lock().unwrap(), vec![1, 2, 3]);
     }
 

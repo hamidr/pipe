@@ -33,10 +33,7 @@ impl<B> Clone for Sender<B> {
 impl<B: Send + 'static> Sender<B> {
     /// Send a chunk. Awaits if buffer is full (backpressure).
     pub async fn send(&self, chunk: Vec<B>) -> Result<(), PipeError> {
-        self.tx
-            .send(chunk)
-            .await
-            .map_err(|_| PipeError::Closed)
+        self.tx.send(chunk).await.map_err(|_| PipeError::Closed)
     }
 }
 
@@ -197,8 +194,8 @@ mod tests {
 
     #[tokio::test]
     async fn backpressure_blocks_sender() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let (tx, mut rx) = bounded::<i64>(1); // capacity 1 chunk
         let sent = Arc::new(AtomicUsize::new(0));

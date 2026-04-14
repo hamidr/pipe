@@ -34,7 +34,10 @@ pub(super) struct PullBracket<B: Send + 'static, R: Send + Sync + 'static> {
 impl<B: Send + 'static, R: Send + Sync + 'static> Drop for PullBracket<B, R> {
     fn drop(&mut self) {
         let old = std::mem::replace(&mut self.state, BracketState::Done);
-        if let BracketState::Active { release, resource, .. } = old {
+        if let BracketState::Active {
+            release, resource, ..
+        } = old
+        {
             release(resource);
         }
     }
@@ -54,12 +57,20 @@ impl<B: Send + 'static, R: Send + Sync + 'static> PullOperator<B> for PullBracke
                     let resource = Arc::new(acquire().await?);
                     let pipe = use_resource(Arc::clone(&resource));
                     let inner = pipe.into_pull();
-                    self.state = BracketState::Active { inner, resource, release };
+                    self.state = BracketState::Active {
+                        inner,
+                        resource,
+                        release,
+                    };
                 }
             }
 
             match &mut self.state {
-                BracketState::Active { inner, resource, release } => match inner.next_chunk().await {
+                BracketState::Active {
+                    inner,
+                    resource,
+                    release,
+                } => match inner.next_chunk().await {
                     Ok(Some(chunk)) => Ok(Some(chunk)),
                     Ok(None) => {
                         let release = Arc::clone(release);
@@ -404,8 +415,7 @@ impl<B: Clone + Send + Sync + 'static> LazyFanOut<B> {
             let mut senders = Vec::with_capacity(self.n);
             let mut receivers = Vec::with_capacity(self.n);
             for _ in 0..self.n {
-                let (tx, rx) =
-                    tokio::sync::mpsc::channel::<Arc<Vec<B>>>(self.buffer_size.max(1));
+                let (tx, rx) = tokio::sync::mpsc::channel::<Arc<Vec<B>>>(self.buffer_size.max(1));
                 senders.push(tx);
                 receivers.push(Some(rx));
             }
@@ -516,7 +526,10 @@ impl<B: Send + 'static> LazyPartition<B> {
         })
     }
 
-    pub(super) fn take_receiver(&self, idx: usize) -> (crate::channel::Receiver<B>, Arc<SharedAbort>) {
+    pub(super) fn take_receiver(
+        &self,
+        idx: usize,
+    ) -> (crate::channel::Receiver<B>, Arc<SharedAbort>) {
         let state = self.ensure_init();
         state.receivers.lock().unwrap()[idx]
             .take()
@@ -1042,7 +1055,11 @@ impl<B: Send + 'static> PullOperator<B> for PullUnNoneTerminate<B> {
                             }
                         }
                     }
-                    if result.is_empty() { Ok(None) } else { Ok(Some(result)) }
+                    if result.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(result))
+                    }
                 }
                 None => Ok(None),
             }

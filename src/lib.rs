@@ -37,8 +37,8 @@
 
 pub mod cancel;
 pub mod channel;
-pub mod meter;
 pub mod io;
+pub mod meter;
 pub mod operator;
 pub mod pipeline;
 pub mod pull;
@@ -48,8 +48,8 @@ pub mod stream;
 pub mod topic;
 pub mod transform;
 
-pub use pipe_macros::{operator, pipe_fn, pull_operator};
 pub use operator::PipeResult;
+pub use pipe_macros::{operator, pipe_fn, pull_operator};
 
 /// Construct a `Pipe` from literal elements.
 ///
@@ -114,7 +114,7 @@ macro_rules! pipe_gen_once {
 pub mod prelude {
     //! Re-exports for convenience.
     pub use crate::cancel::CancelToken;
-    pub use crate::channel::{bounded, Receiver, Sender};
+    pub use crate::channel::{Receiver, Sender, bounded};
     pub use crate::operator::{Operator, PinFut};
     pub use crate::pipeline::{Emitter, Pipe};
     pub use crate::pull::{ChunkFut, PipeError, PullOperator};

@@ -4,15 +4,14 @@ use std::sync::Arc;
 
 use crate::operator::Operator;
 use crate::pull::{
-    PullAndThen, PullDrop, PullFilter, PullFlatMap, PullMap, PullPipe, PullScan,
-    PullTake, PullTap,
+    PullAndThen, PullDrop, PullFilter, PullFlatMap, PullMap, PullPipe, PullScan, PullTake, PullTap,
 };
 
+use super::Pipe;
 use super::pull_ops::{
-    PullChain, PullChunks, PullInterleave, PullIntersperse, PullSlidingWindow, PullSkipWhile,
+    PullChain, PullChunks, PullInterleave, PullIntersperse, PullSkipWhile, PullSlidingWindow,
     PullTakeWhile,
 };
-use super::Pipe;
 
 impl<B: Send + 'static> Pipe<B> {
     /// Transform each element (may change type).
@@ -176,7 +175,10 @@ impl<B: Send + 'static> Pipe<B> {
                 drop(current_handle);
             });
 
-            Box::new(crate::channel::ChunkResultReceiver::new(out_rx, handle.abort_handle()))
+            Box::new(crate::channel::ChunkResultReceiver::new(
+                out_rx,
+                handle.abort_handle(),
+            ))
         })
     }
 
@@ -487,9 +489,7 @@ impl<B: Send + 'static> Pipe<B> {
     /// converts errors into elements so the pipe continues.
     pub fn attempt(self) -> Pipe<Result<B, crate::pull::PipeError>> {
         let parent = self.factory;
-        Pipe::from_factory(move || {
-            Box::new(super::pull_ops::PullAttempt::new(parent()))
-        })
+        Pipe::from_factory(move || Box::new(super::pull_ops::PullAttempt::new(parent())))
     }
 
     /// Wrap each element in `Some`, then emit `None` at the end.
@@ -512,9 +512,7 @@ impl<B: Send + 'static> Pipe<Option<B>> {
     pub fn un_none_terminate(self) -> Pipe<B> {
         let parent = self.factory;
         Pipe::from_factory(move || {
-            Box::new(super::pull_ops::PullUnNoneTerminate {
-                child: parent(),
-            })
+            Box::new(super::pull_ops::PullUnNoneTerminate { child: parent() })
         })
     }
 }

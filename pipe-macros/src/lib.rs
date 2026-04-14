@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, FnArg, ImplItem, ItemFn, ItemImpl, Pat, ReturnType, Type};
+use syn::{FnArg, ImplItem, ItemFn, ItemImpl, Pat, ReturnType, Type, parse_macro_input};
 
 /// Derive an `Operator<A, B>` impl from a plain impl block.
 ///

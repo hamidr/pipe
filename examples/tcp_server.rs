@@ -8,8 +8,7 @@ use pipe_io::net::{self, TcpConnection, TcpWriter};
 
 type ChatMsg = (SocketAddr, String);
 
-static TOPIC: std::sync::LazyLock<Topic<ChatMsg>> =
-    std::sync::LazyLock::new(|| Topic::new(256));
+static TOPIC: std::sync::LazyLock<Topic<ChatMsg>> = std::sync::LazyLock::new(|| Topic::new(256));
 
 #[pipe_fn]
 async fn accept(conn: TcpConnection) -> Result<Pipe<String>, PipeError> {
@@ -18,11 +17,12 @@ async fn accept(conn: TcpConnection) -> Result<Pipe<String>, PipeError> {
 
     let _ = TOPIC.publish((addr, format!("{addr} joined")));
 
-    let inbound = lines
-        .pipe(Publish { addr })
-        .on_finalize(move || { let _ = TOPIC.publish((addr, format!("{addr} left"))); });
+    let inbound = lines.pipe(Publish { addr }).on_finalize(move || {
+        let _ = TOPIC.publish((addr, format!("{addr} left")));
+    });
 
-    let outbound = TOPIC.subscribe()
+    let outbound = TOPIC
+        .subscribe()
         .filter(move |(src, _)| *src != addr)
         .pipe(Forward { writer });
 
@@ -30,7 +30,9 @@ async fn accept(conn: TcpConnection) -> Result<Pipe<String>, PipeError> {
 }
 
 #[derive(Debug)]
-struct Publish { addr: SocketAddr }
+struct Publish {
+    addr: SocketAddr,
+}
 
 #[operator]
 impl Publish {
@@ -42,7 +44,9 @@ impl Publish {
 }
 
 #[derive(Debug)]
-struct Forward { writer: TcpWriter }
+struct Forward {
+    writer: TcpWriter,
+}
 
 #[operator]
 impl Forward {

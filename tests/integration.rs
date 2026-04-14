@@ -1,8 +1,8 @@
 //! Complex integration tests exercising multiple pipe features together.
 
 use pipe::prelude::*;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// ETL pipeline: read → parse → validate → transform → aggregate
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -34,7 +34,7 @@ async fn fan_out_fan_in() {
         .broadcast_through(
             4,
             vec![
-                Box::new(|p: Pipe<i64>| p.map(|x| x * 10)),  // branch 0: multiply
+                Box::new(|p: Pipe<i64>| p.map(|x| x * 10)), // branch 0: multiply
                 Box::new(|p: Pipe<i64>| p.map(|x| x + 100)), // branch 1: offset
                 Box::new(|p: Pipe<i64>| p.filter(|x| x % 3 == 0)), // branch 2: filter
             ],
@@ -47,9 +47,9 @@ async fn fan_out_fan_in() {
     // Branch 0: 10,20,30,...,120
     // Branch 1: 101,102,...,112
     // Branch 2: 3,6,9,12
-    assert!(result.contains(&10));  // from branch 0
+    assert!(result.contains(&10)); // from branch 0
     assert!(result.contains(&101)); // from branch 1
-    assert!(result.contains(&3));   // from branch 2
+    assert!(result.contains(&3)); // from branch 2
     assert_eq!(result.len(), 12 + 12 + 4);
 }
 
@@ -93,8 +93,7 @@ async fn error_recovery_chain() {
             let n = attempts2.fetch_add(1, Ordering::SeqCst);
             if n < 2 {
                 // First two attempts fail
-                Pipe::from_iter(vec![1i64])
-                    .eval_map(|_| async { Err("transient".into()) })
+                Pipe::from_iter(vec![1i64]).eval_map(|_| async { Err("transient".into()) })
             } else {
                 // Third attempt succeeds
                 Pipe::from_iter(vec![10, 20, 30])
@@ -124,7 +123,10 @@ async fn attempt_catches_error_as_element() {
         fn next_chunk(&mut self) -> ChunkFut<'_, i64> {
             Box::pin(async move {
                 match self.phase {
-                    0 => { self.phase = 1; Ok(Some(vec![1, 2])) }
+                    0 => {
+                        self.phase = 1;
+                        Ok(Some(vec![1, 2]))
+                    }
                     _ => Err("flaky".into()),
                 }
             })
@@ -182,9 +184,7 @@ async fn transform_composition() {
         })
     });
 
-    let clip = Transform::new(|p: Pipe<f64>| {
-        p.map(|x| x.max(-10.0).min(10.0))
-    });
+    let clip = Transform::new(|p: Pipe<f64>| p.map(|x| x.max(-10.0).min(10.0)));
 
     let pipeline = normalize.and_then(clip);
 
@@ -203,14 +203,10 @@ async fn transform_composition() {
 #[tokio::test]
 async fn none_terminate_protocol() {
     // Simulate a protocol where producer sends items then None
-    let producer = Pipe::from_iter(vec![Some(1i64), Some(2), Some(3), None, Some(99)])
-        .un_none_terminate();
+    let producer =
+        Pipe::from_iter(vec![Some(1i64), Some(2), Some(3), None, Some(99)]).un_none_terminate();
 
-    let result = producer
-        .map(|x| x * 10)
-        .collect()
-        .await
-        .unwrap();
+    let result = producer.map(|x| x * 10).collect().await.unwrap();
 
     // Should stop at None, never see 99
     assert_eq!(result, vec![10, 20, 30]);
@@ -232,10 +228,7 @@ async fn io_roundtrip() {
         .await
         .unwrap();
 
-    assert_eq!(
-        String::from_utf8(output).unwrap(),
-        "[HELLO]\n[WORLD]\n"
-    );
+    assert_eq!(String::from_utf8(output).unwrap(), "[HELLO]\n[WORLD]\n");
 }
 
 /// Zip + enumerate + scan: numbered running total of paired values
@@ -371,7 +364,10 @@ async fn par_join_merges_concurrent_pipes() {
     // All 15 elements should be present
     let mut sorted = result.clone();
     sorted.sort();
-    assert_eq!(sorted, vec![0, 1, 2, 10, 11, 12, 20, 21, 22, 30, 31, 32, 40, 41, 42]);
+    assert_eq!(
+        sorted,
+        vec![0, 1, 2, 10, 11, 12, 20, 21, 22, 30, 31, 32, 40, 41, 42]
+    );
 }
 
 /// par_join_unbounded: all inner pipes run concurrently
@@ -420,8 +416,11 @@ async fn par_join_limits_concurrency() {
 
     assert_eq!(result.len(), 10);
     // Concurrency should not exceed 3 (may be less due to timing)
-    assert!(max_seen.load(Ordering::SeqCst) <= 3,
-        "max concurrent was {}, expected <= 3", max_seen.load(Ordering::SeqCst));
+    assert!(
+        max_seen.load(Ordering::SeqCst) <= 3,
+        "max concurrent was {}, expected <= 3",
+        max_seen.load(Ordering::SeqCst)
+    );
 }
 
 /// par_join propagates errors from inner pipes (fail-fast)
@@ -446,7 +445,10 @@ async fn par_join_propagates_inner_error() {
 
     assert!(result.is_err(), "expected error but got {:?}", result);
     let err = result.unwrap_err();
-    assert!(err.to_string().contains("boom"), "expected 'boom' but got: {err}");
+    assert!(
+        err.to_string().contains("boom"),
+        "expected 'boom' but got: {err}"
+    );
 }
 
 /// par_join propagates errors from outer pipe
@@ -455,15 +457,14 @@ async fn par_join_propagates_outer_error() {
     use pipe::pull::PipeError;
 
     // Outer pipe: emit one inner pipe then error
-    let result = Pipe::from_iter(vec![Pipe::from_iter(vec![1i64])])
-        .chain(
-            Pipe::from_iter(vec![0i64]).eval_map(|_| async {
+    let result =
+        Pipe::from_iter(vec![Pipe::from_iter(vec![1i64])])
+            .chain(Pipe::from_iter(vec![0i64]).eval_map(|_| async {
                 Err::<Pipe<i64>, _>(PipeError::Custom("outer fail".into()))
-            }),
-        )
-        .par_join_unbounded()
-        .collect()
-        .await;
+            }))
+            .par_join_unbounded()
+            .collect()
+            .await;
 
     assert!(result.is_err());
 }

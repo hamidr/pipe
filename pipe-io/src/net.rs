@@ -270,7 +270,11 @@ mod tests {
         let handle = tokio::spawn(async move {
             let (stream, peer_addr) = listener.accept().await.unwrap();
             let (reader, writer) = stream.into_split();
-            let conn = TcpConnection { addr: peer_addr, reader, writer };
+            let conn = TcpConnection {
+                addr: peer_addr,
+                reader,
+                writer,
+            };
             let (bytes_pipe, _writer) = conn.into_bytes();
             let chunks = bytes_pipe.collect().await.unwrap();
             let flat: Vec<u8> = chunks.into_iter().flatten().collect();
@@ -294,7 +298,11 @@ mod tests {
         let handle = tokio::spawn(async move {
             let (stream, peer_addr) = listener.accept().await.unwrap();
             let (reader, writer) = stream.into_split();
-            let conn = TcpConnection { addr: peer_addr, reader, writer };
+            let conn = TcpConnection {
+                addr: peer_addr,
+                reader,
+                writer,
+            };
             let (lines_pipe, _writer) = conn.into_lines();
             lines_pipe.collect().await
         });

@@ -342,7 +342,8 @@ impl<A: Send + 'static, B: Send + 'static, F: Fn(A) -> Option<B> + Send + 'stati
                 match self.child.next_chunk().await? {
                     Some(chunk) => {
                         self.buf.clear();
-                        self.buf.extend(chunk.into_iter().filter_map(|a| (self.f)(a)));
+                        self.buf
+                            .extend(chunk.into_iter().filter_map(|a| (self.f)(a)));
                         if !self.buf.is_empty() {
                             return Ok(Some(std::mem::take(&mut self.buf)));
                         }
@@ -377,11 +378,8 @@ impl<A: Send + 'static, B: Send + 'static, F> PullFlatMap<A, B, F> {
     }
 }
 
-impl<
-        A: Send + 'static,
-        B: Send + 'static,
-        F: Fn(A) -> crate::pipeline::Pipe<B> + Send + 'static,
-    > PullOperator<B> for PullFlatMap<A, B, F>
+impl<A: Send + 'static, B: Send + 'static, F: Fn(A) -> crate::pipeline::Pipe<B> + Send + 'static>
+    PullOperator<B> for PullFlatMap<A, B, F>
 {
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
         Box::pin(async move {
@@ -496,11 +494,11 @@ pub(crate) struct PullScan<A, S, F> {
 }
 
 impl<
-        A: Send + 'static,
-        B: Send + 'static,
-        S: Send + 'static,
-        F: Fn(&mut S, A) -> B + Send + 'static,
-    > PullOperator<B> for PullScan<A, S, F>
+    A: Send + 'static,
+    B: Send + 'static,
+    S: Send + 'static,
+    F: Fn(&mut S, A) -> B + Send + 'static,
+> PullOperator<B> for PullScan<A, S, F>
 {
     fn next_chunk(&mut self) -> ChunkFut<'_, B> {
         Box::pin(async move {
@@ -551,10 +549,7 @@ pub(crate) struct PullZip<A: Send + 'static, B: Send + 'static> {
 }
 
 impl<A: Send + 'static, B: Send + 'static> PullZip<A, B> {
-    pub(crate) fn new(
-        left: Box<dyn PullOperator<A>>,
-        right: Box<dyn PullOperator<B>>,
-    ) -> Self {
+    pub(crate) fn new(left: Box<dyn PullOperator<A>>, right: Box<dyn PullOperator<B>>) -> Self {
         Self {
             left,
             right,

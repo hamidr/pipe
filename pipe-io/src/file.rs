@@ -109,9 +109,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_nonexistent_file_errors() {
-        let result = read("/tmp/pipe-io-no-such-file-12345.txt")
-            .collect()
-            .await;
+        let result = read("/tmp/pipe-io-no-such-file-12345.txt").collect().await;
         assert!(result.is_err());
     }
 

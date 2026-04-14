@@ -9,8 +9,8 @@ pub mod pipe_grpc_test {
     tonic::include_proto!("pipe_grpc_test");
 }
 
-use pipe_grpc_test::test_streaming_server::{TestStreaming, TestStreamingServer};
 use pipe_grpc_test::test_streaming_client::TestStreamingClient;
+use pipe_grpc_test::test_streaming_server::{TestStreaming, TestStreamingServer};
 use pipe_grpc_test::{StreamItem, StreamRequest};
 
 #[derive(Default)]
@@ -18,8 +18,7 @@ struct TestService;
 
 #[tonic::async_trait]
 impl TestStreaming for TestService {
-    type ServerStreamStream =
-        Pin<Box<dyn Stream<Item = Result<StreamItem, Status>> + Send>>;
+    type ServerStreamStream = Pin<Box<dyn Stream<Item = Result<StreamItem, Status>> + Send>>;
 
     async fn server_stream(
         &self,
@@ -70,11 +69,10 @@ async fn collect_all_items() {
         .await
         .unwrap();
 
-    let items: Vec<StreamItem> =
-        pipe_grpc::streaming::from_tonic(response.into_inner())
-            .collect()
-            .await
-            .unwrap();
+    let items: Vec<StreamItem> = pipe_grpc::streaming::from_tonic(response.into_inner())
+        .collect()
+        .await
+        .unwrap();
 
     assert_eq!(items.len(), 5);
     for (i, item) in items.iter().enumerate() {
@@ -117,12 +115,11 @@ async fn take_cancels_early() {
         .await
         .unwrap();
 
-    let items: Vec<StreamItem> =
-        pipe_grpc::streaming::from_tonic(response.into_inner())
-            .take(3)
-            .collect()
-            .await
-            .unwrap();
+    let items: Vec<StreamItem> = pipe_grpc::streaming::from_tonic(response.into_inner())
+        .take(3)
+        .collect()
+        .await
+        .unwrap();
 
     assert_eq!(items.len(), 3);
 }
@@ -139,11 +136,10 @@ async fn empty_stream() {
         .await
         .unwrap();
 
-    let items: Vec<StreamItem> =
-        pipe_grpc::streaming::from_tonic(response.into_inner())
-            .collect()
-            .await
-            .unwrap();
+    let items: Vec<StreamItem> = pipe_grpc::streaming::from_tonic(response.into_inner())
+        .collect()
+        .await
+        .unwrap();
 
     assert!(items.is_empty());
 }

@@ -1,10 +1,10 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket};
-use axum::extract::WebSocketUpgrade;
-use axum::routing::get;
 use axum::Router;
+use axum::extract::WebSocketUpgrade;
+use axum::extract::ws::{Message, WebSocket};
+use axum::routing::get;
 use pipe_http::ws::{self, WsMessage};
 
 async fn start_server(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -87,7 +87,10 @@ async fn ws_bidirectional_echo() {
         .unwrap();
 
     send_handle.await.unwrap();
-    assert_eq!(replies, vec!["echo:hello-0", "echo:hello-1", "echo:hello-2"]);
+    assert_eq!(
+        replies,
+        vec!["echo:hello-0", "echo:hello-1", "echo:hello-2"]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -105,11 +108,7 @@ async fn ws_binary_messages() {
     let (addr, _server) = start_server(app).await;
 
     let (incoming, _sender) = ws::connect(format!("ws://{addr}/ws"));
-    let messages: Vec<Vec<u8>> = incoming
-        .and_then(|m| m.bytes())
-        .collect()
-        .await
-        .unwrap();
+    let messages: Vec<Vec<u8>> = incoming.and_then(|m| m.bytes()).collect().await.unwrap();
 
     assert_eq!(messages, vec![vec![1, 2, 3], vec![4, 5]]);
 }
@@ -168,7 +167,11 @@ async fn ws_cancellation_via_take() {
         get(|upgrade: WebSocketUpgrade| async {
             upgrade.on_upgrade(|mut socket: WebSocket| async move {
                 for i in 0..10000 {
-                    if socket.send(Message::Text(format!("{i}").into())).await.is_err() {
+                    if socket
+                        .send(Message::Text(format!("{i}").into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }

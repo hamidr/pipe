@@ -3,10 +3,10 @@
 
 use std::collections::VecDeque;
 
-use crate::pull::{collect_all, fold_all, PipeError, PullOperator};
+use crate::pull::{PipeError, PullOperator, collect_all, fold_all};
 
-use super::pull_ops::PullFlatten;
 use super::Pipe;
+use super::pull_ops::PullFlatten;
 
 impl<B: Send + 'static> Pipe<B> {
     /// Materialize the pipeline into a pull operator chain.

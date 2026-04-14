@@ -87,8 +87,16 @@ mod tests {
     async fn transform_clone() {
         let t = Transform::new(|p: Pipe<i64>| p.map(|x| x + 1));
         let t2 = t.clone();
-        let a = Pipe::from_iter(vec![1, 2, 3]).apply(&t).collect().await.unwrap();
-        let b = Pipe::from_iter(vec![10, 20]).apply(&t2).collect().await.unwrap();
+        let a = Pipe::from_iter(vec![1, 2, 3])
+            .apply(&t)
+            .collect()
+            .await
+            .unwrap();
+        let b = Pipe::from_iter(vec![10, 20])
+            .apply(&t2)
+            .collect()
+            .await
+            .unwrap();
         assert_eq!(a, vec![2, 3, 4]);
         assert_eq!(b, vec![11, 21]);
     }

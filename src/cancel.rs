@@ -82,14 +82,12 @@ mod tests {
         let token = CancelToken::new();
         let t = token.clone();
 
-        let pipe = Pipe::from_iter(1..=1000)
-            .with_cancel(token)
-            .map(move |x| {
-                if x == 5 {
-                    t.cancel();
-                }
-                x
-            });
+        let pipe = Pipe::from_iter(1..=1000).with_cancel(token).map(move |x| {
+            if x == 5 {
+                t.cancel();
+            }
+            x
+        });
 
         let result = pipe.collect().await.unwrap();
         // Should stop shortly after element 5

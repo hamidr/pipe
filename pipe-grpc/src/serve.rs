@@ -42,7 +42,10 @@ pub struct PipeResponse<T: Send + 'static> {
 impl<T: Send + 'static> Stream for PipeResponse<T> {
     type Item = Result<T, tonic::Status>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<T, tonic::Status>>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<T, tonic::Status>>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(Ok(item))),
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(pipe_error_to_status(e)))),
@@ -65,10 +68,7 @@ pub fn to_stream<T: Send + 'static>(pipe: Pipe<T>) -> PipeResponse<T> {
 
 /// Convert a `Pipe<T>` into a tonic-compatible streaming response
 /// with a custom buffer size for backpressure tuning.
-pub fn to_stream_buffered<T: Send + 'static>(
-    pipe: Pipe<T>,
-    buffer_size: usize,
-) -> PipeResponse<T> {
+pub fn to_stream_buffered<T: Send + 'static>(pipe: Pipe<T>, buffer_size: usize) -> PipeResponse<T> {
     PipeResponse {
         inner: pipe.into_stream_buffered(buffer_size),
     }
