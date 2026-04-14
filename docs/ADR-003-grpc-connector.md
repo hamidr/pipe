@@ -1,6 +1,6 @@
 # ADR-003: gRPC Connector -- Server Streaming Source First, Then Bidi
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-04-11
 **Supersedes**: --
 **Related**: [ADR-002](ADR-002-connector-strategy.md) (extends connector strategy with gRPC)

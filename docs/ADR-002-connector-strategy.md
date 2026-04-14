@@ -1,6 +1,6 @@
 # ADR-002: Connector Strategy -- SSE First, Then WebSocket, Then Brokers
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-04-11
 **Supersedes**: --
 **Related**: [ADR-001](ADR-001-operator-fusion-strategy.md) (deferred in favor of this)

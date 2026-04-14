@@ -1,6 +1,6 @@
 # ADR-001: Operator Fusion Strategy
 
-**Status**: Proposed
+**Status**: Deferred
 **Date**: 2026-04-11
 
 ## Context
