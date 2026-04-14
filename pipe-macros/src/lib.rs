@@ -220,9 +220,7 @@ fn extract_chunk_element_type(ret: &ReturnType) -> &Type {
         let last = type_path.path.segments.last().unwrap();
         if last.ident == "Result" {
             if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                if let Some(syn::GenericArgument::Type(Type::Path(opt_path))) =
-                    args.args.first()
-                {
+                if let Some(syn::GenericArgument::Type(Type::Path(opt_path))) = args.args.first() {
                     let opt_seg = opt_path.path.segments.last().unwrap();
                     if opt_seg.ident == "Option" {
                         if let syn::PathArguments::AngleBracketed(opt_args) = &opt_seg.arguments {

@@ -466,7 +466,8 @@ pub(super) struct LazyPartition<B: Send + 'static> {
     state: std::sync::OnceLock<LazyPartitionState<B>>,
 }
 
-type PartitionReceivers<B> = std::sync::Mutex<Vec<Option<(crate::channel::Receiver<B>, Arc<SharedAbort>)>>>;
+type PartitionReceivers<B> =
+    std::sync::Mutex<Vec<Option<(crate::channel::Receiver<B>, Arc<SharedAbort>)>>>;
 
 struct LazyPartitionState<B> {
     receivers: PartitionReceivers<B>,
