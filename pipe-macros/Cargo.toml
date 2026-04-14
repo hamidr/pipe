@@ -6,6 +6,8 @@ rust-version = "1.85"
 description = "Procedural macros for pipe -- #[operator], #[pull_operator], #[pipe_fn]"
 license = "MIT"
 repository = "https://github.com/hamidr/pipe"
+keywords = ["async", "streaming", "pipeline", "proc-macro"]
+categories = ["asynchronous"]
 
 [lib]
 proc-macro = true

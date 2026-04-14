@@ -10,7 +10,7 @@ keywords = ["async", "streaming", "sse", "websocket", "server-sent-events"]
 categories = ["asynchronous", "network-programming", "web-programming"]
 
 [dependencies]
-pipe = { path = ".." }
+pipe = { path = "..", version = "0.6.0" }
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 tokio = { version = "1", features = ["sync", "time", "rt"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }

@@ -11,5 +11,5 @@ categories = ["asynchronous", "network-programming"]
 exclude = [".github/"]
 
 [dependencies]
-pipe = { path = ".." }
+pipe = { path = "..", version = "0.6.0" }
 tokio = { version = "1", features = ["net", "fs", "io-util", "rt"] }

@@ -3,14 +3,14 @@ name = "pipe-grpc"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "gRPC connectors for pipe -- tonic Streaming<T> source"
+description = "gRPC connectors for pipe -- tonic Streaming<T> source and server response adapter"
 license = "MIT"
 repository = "https://github.com/hamidr/pipe"
 keywords = ["async", "streaming", "grpc", "tonic", "protobuf"]
 categories = ["asynchronous", "network-programming"]
 
 [dependencies]
-pipe = { path = ".." }
+pipe = { path = "..", version = "0.6.0" }
 tonic = { version = "0.12", default-features = false, features = ["transport", "channel"] }
 futures-core = "0.3"
 
