@@ -67,7 +67,8 @@ impl<B: Send + 'static> Pipe<B> {
         f: impl Fn(&mut S, B) -> C + Send + Sync + 'static,
     ) -> Pipe<C> {
         let parent = self.factory;
-        let f: Arc<dyn Fn(&mut S, B) -> C + Send + Sync> = Arc::new(f);
+        type ScanFn<S, B, C> = Arc<dyn Fn(&mut S, B) -> C + Send + Sync>;
+        let f: ScanFn<S, B, C> = Arc::new(f);
         Pipe::from_factory(move || {
             let child = parent();
             let state = init.clone();

@@ -8,14 +8,15 @@ use crate::pull::{ChunkFut, PipeError, PullOperator, YIELD_AFTER_EMPTY};
 
 use super::Pipe;
 
+type AcquireFn<R> = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, PipeError>> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub(super) enum BracketState<B: Send + 'static, R: Send + Sync + 'static> {
     Pending {
-        acquire: Arc<
-            dyn Fn() -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Result<R, PipeError>> + Send>,
-                > + Send
-                + Sync,
-        >,
+        acquire: AcquireFn<R>,
         use_resource: Arc<dyn Fn(Arc<R>) -> Pipe<B> + Send + Sync>,
         release: Arc<dyn Fn(Arc<R>) + Send + Sync>,
     },
@@ -391,8 +392,10 @@ pub(super) struct LazyFanOut<B: Send + 'static> {
     state: std::sync::OnceLock<LazyFanOutState<B>>,
 }
 
+type FanOutReceivers<B> = std::sync::Mutex<Vec<Option<tokio::sync::mpsc::Receiver<Arc<Vec<B>>>>>>;
+
 struct LazyFanOutState<B> {
-    receivers: std::sync::Mutex<Vec<Option<tokio::sync::mpsc::Receiver<Arc<Vec<B>>>>>>,
+    receivers: FanOutReceivers<B>,
     abort: tokio::task::AbortHandle,
 }
 
@@ -463,8 +466,10 @@ pub(super) struct LazyPartition<B: Send + 'static> {
     state: std::sync::OnceLock<LazyPartitionState<B>>,
 }
 
+type PartitionReceivers<B> = std::sync::Mutex<Vec<Option<(crate::channel::Receiver<B>, Arc<SharedAbort>)>>>;
+
 struct LazyPartitionState<B> {
-    receivers: std::sync::Mutex<Vec<Option<(crate::channel::Receiver<B>, Arc<SharedAbort>)>>>,
+    receivers: PartitionReceivers<B>,
 }
 
 impl<B: Send + 'static> LazyPartition<B> {

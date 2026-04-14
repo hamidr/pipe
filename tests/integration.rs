@@ -184,7 +184,7 @@ async fn transform_composition() {
         })
     });
 
-    let clip = Transform::new(|p: Pipe<f64>| p.map(|x| x.max(-10.0).min(10.0)));
+    let clip = Transform::new(|p: Pipe<f64>| p.map(|x| x.clamp(-10.0, 10.0)));
 
     let pipeline = normalize.and_then(clip);
 

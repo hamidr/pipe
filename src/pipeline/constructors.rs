@@ -38,7 +38,8 @@ impl<B: Send + 'static> Pipe<B> {
         seed: S,
         step: impl Fn(&mut S) -> Option<B> + Send + Sync + 'static,
     ) -> Self {
-        let step: Arc<dyn Fn(&mut S) -> Option<B> + Send + Sync> = Arc::new(step);
+        type StepFn<S, B> = Arc<dyn Fn(&mut S) -> Option<B> + Send + Sync>;
+        let step: StepFn<S, B> = Arc::new(step);
         Self::from_factory(move || {
             let seed = seed.clone();
             let step = Arc::clone(&step);

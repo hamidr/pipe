@@ -184,7 +184,7 @@ impl<B: Clone + Send + Sync + 'static> PullOperator<B> for ArcSource<B> {
                 return Ok(None);
             }
             let end = (self.offset + ARC_SOURCE_CHUNK_SIZE).min(self.data.len());
-            let chunk: Vec<B> = self.data[self.offset..end].iter().cloned().collect();
+            let chunk: Vec<B> = self.data[self.offset..end].to_vec();
             self.offset = end;
             Ok(Some(chunk))
         })

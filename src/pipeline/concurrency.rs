@@ -5,6 +5,9 @@ use std::sync::Arc;
 use crate::pull::{PipeError, PullOperator, PullZip};
 
 use super::Pipe;
+
+type BroadcastTransform<B> = Box<dyn FnOnce(Pipe<B>) -> Pipe<B> + Send>;
+
 use super::pull_ops::{
     BroadcastReceiver, GuardedPull, LazyFanOut, LazyPartition, PartitionReceiver, SharedAbort,
 };
@@ -194,7 +197,7 @@ impl<B: Send + 'static> Pipe<B> {
     pub fn broadcast_through(
         self,
         buffer_size: usize,
-        transforms: Vec<Box<dyn FnOnce(Pipe<B>) -> Pipe<B> + Send>>,
+        transforms: Vec<BroadcastTransform<B>>,
     ) -> Self
     where
         B: Clone + Sync,

@@ -1578,7 +1578,7 @@ mod tests {
         }
 
         let result = Pipe::from_pull_once(FailSource)
-            .flat_map(|x| Pipe::once(x))
+            .flat_map(Pipe::once)
             .collect()
             .await;
         assert!(result.is_err());

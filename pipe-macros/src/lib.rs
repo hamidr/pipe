@@ -220,29 +220,24 @@ fn extract_chunk_element_type(ret: &ReturnType) -> &Type {
         let last = type_path.path.segments.last().unwrap();
         if last.ident == "Result" {
             if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                if let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first() {
-                    // ok_ty should be Option<Vec<B>>
-                    if let Type::Path(opt_path) = ok_ty {
-                        let opt_seg = opt_path.path.segments.last().unwrap();
-                        if opt_seg.ident == "Option" {
-                            if let syn::PathArguments::AngleBracketed(opt_args) = &opt_seg.arguments
+                if let Some(syn::GenericArgument::Type(Type::Path(opt_path))) =
+                    args.args.first()
+                {
+                    let opt_seg = opt_path.path.segments.last().unwrap();
+                    if opt_seg.ident == "Option" {
+                        if let syn::PathArguments::AngleBracketed(opt_args) = &opt_seg.arguments {
+                            if let Some(syn::GenericArgument::Type(Type::Path(vec_path))) =
+                                opt_args.args.first()
                             {
-                                if let Some(syn::GenericArgument::Type(vec_ty)) =
-                                    opt_args.args.first()
-                                {
-                                    // vec_ty should be Vec<B>
-                                    if let Type::Path(vec_path) = vec_ty {
-                                        let vec_seg = vec_path.path.segments.last().unwrap();
-                                        if vec_seg.ident == "Vec" {
-                                            if let syn::PathArguments::AngleBracketed(vec_args) =
-                                                &vec_seg.arguments
-                                            {
-                                                if let Some(syn::GenericArgument::Type(elem_ty)) =
-                                                    vec_args.args.first()
-                                                {
-                                                    return elem_ty;
-                                                }
-                                            }
+                                let vec_seg = vec_path.path.segments.last().unwrap();
+                                if vec_seg.ident == "Vec" {
+                                    if let syn::PathArguments::AngleBracketed(vec_args) =
+                                        &vec_seg.arguments
+                                    {
+                                        if let Some(syn::GenericArgument::Type(elem_ty)) =
+                                            vec_args.args.first()
+                                        {
+                                            return elem_ty;
                                         }
                                     }
                                 }
