@@ -36,6 +36,7 @@ pipe = { git = "https://github.com/hamidr/pipe" }
 # Optional crates:
 pipe-io = { git = "https://github.com/hamidr/pipe" }    # File, TCP, UDP
 pipe-http = { git = "https://github.com/hamidr/pipe" }   # SSE, WebSocket
+pipe-grpc = { git = "https://github.com/hamidr/pipe" }   # gRPC streaming
 ```
 
 Requires **Tokio** as the async runtime.
@@ -134,6 +135,23 @@ incoming
 ```
 
 Lazy connection, cloneable sender, automatic ping/pong, 16 MiB message limit.
+
+### gRPC streaming
+
+```rust
+use pipe_grpc::streaming;
+
+let response = client.server_stream(Request::new(req)).await?;
+let events: Pipe<MyResponse> = streaming::from_tonic(response.into_inner());
+
+events
+    .filter(|e| e.is_active())
+    .map(|e| transform(e))
+    .for_each(|e| println!("{e:?}"))
+    .await?;
+```
+
+Single-use source (no auto-reconnect -- use `retry()` for application-level reconnection).
 
 ### Graceful shutdown
 
@@ -334,6 +352,7 @@ async fn double(x: i64) -> i64 { x * 2 }
 | `pipe-macros` | Proc macros: `#[operator]`, `#[pull_operator]`, `#[pipe_fn]` |
 | `pipe-io` | File, TCP, UDP constructors |
 | `pipe-http` | SSE source, WebSocket source/sink |
+| `pipe-grpc` | gRPC streaming source, server response adapter |
 
 ## License
 
