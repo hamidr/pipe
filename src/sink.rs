@@ -5,7 +5,7 @@
 //! stored, and cloned.
 //!
 //! ```ignore
-//! use pipe::{Pipe, Sink};
+//! use lazyflow::{Pipe, Sink};
 //!
 //! let to_vec = Sink::collect::<Vec<i64>>();
 //! let count = Sink::count();

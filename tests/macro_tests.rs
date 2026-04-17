@@ -1,5 +1,5 @@
-use pipe::prelude::*;
-use pipe::{pipe, pipe_gen, pipe_gen_once};
+use lazyflow::prelude::*;
+use lazyflow::{pipe, pipe_gen, pipe_gen_once};
 
 #[tokio::test]
 async fn pipe_macro_basic() {
@@ -108,7 +108,7 @@ struct Counter {
 
 #[pull_operator]
 impl Counter {
-    async fn next_chunk(&mut self) -> Result<Option<Vec<i64>>, pipe::pull::PipeError> {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<i64>>, lazyflow::pull::PipeError> {
         if self.done {
             return Ok(None);
         }
@@ -133,7 +133,7 @@ struct Countdown {
 
 #[pull_operator]
 impl Countdown {
-    async fn next_chunk(&mut self) -> Result<Option<Vec<usize>>, pipe::pull::PipeError> {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<usize>>, lazyflow::pull::PipeError> {
         if self.n == 0 {
             return Ok(None);
         }
@@ -239,7 +239,7 @@ async fn eval_for_each_with_async_io() {
     assert_eq!(*results.lock().unwrap(), vec![11, 21, 31]);
 }
 
-#[pipe::pipe_fn]
+#[lazyflow::pipe_fn]
 async fn triple(x: i64) -> i64 {
     x * 3
 }
@@ -250,7 +250,7 @@ async fn pipe_fn_basic() {
     assert_eq!(result, vec![3, 6, 9]);
 }
 
-#[pipe::pipe_fn]
+#[lazyflow::pipe_fn]
 async fn add_prefix(s: String) -> String {
     format!("hello_{s}")
 }
@@ -265,7 +265,7 @@ async fn pipe_fn_type_change() {
     assert_eq!(result, vec!["hello_a", "hello_b"]);
 }
 
-#[pipe::pipe_fn]
+#[lazyflow::pipe_fn]
 async fn to_upper_case(s: String) -> String {
     s.to_uppercase()
 }
@@ -281,8 +281,8 @@ async fn pipe_fn_chained() {
     assert_eq!(result, vec!["hello_FOO", "hello_BAR"]);
 }
 
-#[pipe::pipe_fn]
-async fn parse_int(s: String) -> pipe::PipeResult<i64> {
+#[lazyflow::pipe_fn]
+async fn parse_int(s: String) -> lazyflow::PipeResult<i64> {
     Ok(s.parse()?)
 }
 

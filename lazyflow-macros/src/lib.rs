@@ -41,14 +41,14 @@ pub fn operator(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let body = &method.block;
 
     let expanded = quote! {
-        impl #impl_generics pipe::operator::Operator<#input_type, #output_type> for #struct_ty #where_clause {
+        impl #impl_generics lazyflow::operator::Operator<#input_type, #output_type> for #struct_ty #where_clause {
             fn execute<'__op>(&'__op self, #input_name: #input_type)
-                -> pipe::operator::PinFut<'__op, #output_type>
+                -> lazyflow::operator::PinFut<'__op, #output_type>
             {
                 Box::pin(async move {
                     let __result: ::std::result::Result<#output_type, ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>>
                         = (|| async move #body)().await;
-                    __result.map_err(|e| pipe::pull::PipeError::from(e))
+                    __result.map_err(|e| lazyflow::pull::PipeError::from(e))
                 })
             }
         }
@@ -67,7 +67,7 @@ pub fn operator(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// #[pull_operator]
 /// impl MyCursor {
-///     async fn next_chunk(&mut self) -> Result<Option<Vec<i64>>, pipe::pull::PipeError> {
+///     async fn next_chunk(&mut self) -> Result<Option<Vec<i64>>, lazyflow::pull::PipeError> {
 ///         Ok(Some(vec![1, 2, 3]))
 ///     }
 /// }
@@ -92,8 +92,8 @@ pub fn pull_operator(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let body = &method.block;
 
     let expanded = quote! {
-        impl #impl_generics pipe::pull::PullOperator<#output_type> for #struct_ty #where_clause {
-            fn next_chunk(&mut self) -> pipe::pull::ChunkFut<'_, #output_type> {
+        impl #impl_generics lazyflow::pull::PullOperator<#output_type> for #struct_ty #where_clause {
+            fn next_chunk(&mut self) -> lazyflow::pull::ChunkFut<'_, #output_type> {
                 Box::pin(async move #body)
             }
         }
@@ -145,11 +145,11 @@ pub fn pipe_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
             // Already returns Result/PipeResult -- normalize to PipeError
             let expanded = quote! {
                 #vis async fn #fn_name(#input_name: #input_type)
-                    -> ::std::result::Result<#output_type, pipe::pull::PipeError>
+                    -> ::std::result::Result<#output_type, lazyflow::pull::PipeError>
                 {
                     let __result: ::std::result::Result<#output_type, ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>>
                         = (|| async move #body)().await;
-                    __result.map_err(|e| pipe::pull::PipeError::from(e))
+                    __result.map_err(|e| lazyflow::pull::PipeError::from(e))
                 }
             };
             TokenStream::from(expanded)
@@ -162,7 +162,7 @@ pub fn pipe_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             let expanded = quote! {
                 #vis async fn #fn_name(#input_name: #input_type)
-                    -> ::std::result::Result<#output_type, pipe::pull::PipeError>
+                    -> ::std::result::Result<#output_type, lazyflow::pull::PipeError>
                 {
                     Ok((|| #body)())
                 }

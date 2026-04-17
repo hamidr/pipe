@@ -1,11 +1,11 @@
-# pipe
+# lazyflow
 
 A lazy, effectful streaming library for Rust, inspired by [FS2](https://fs2.io/).
 
 Pull-based, async, back-pressured. No data flows until a terminal is called.
 
 ```rust
-use pipe::prelude::*;
+use lazyflow::prelude::*;
 
 let result = Pipe::from_iter(1..=10)
     .filter(|x| x % 2 == 0)
@@ -16,7 +16,7 @@ let result = Pipe::from_iter(1..=10)
 assert_eq!(result, vec![20, 40, 60]);
 ```
 
-## Why pipe?
+## Why lazyflow?
 
 - **Lazy**: pipelines are blueprints, not live streams. Nothing executes until
   you call a terminal (`.collect()`, `.for_each()`, etc.)
@@ -31,12 +31,12 @@ assert_eq!(result, vec![20, 40, 60]);
 
 ```toml
 [dependencies]
-pipe = { git = "https://github.com/hamidr/pipe" }
+lazyflow = { git = "https://github.com/hamidr/lazyflow" }
 
 # Optional crates:
-pipe-io = { git = "https://github.com/hamidr/pipe" }    # File, TCP, UDP
-pipe-http = { git = "https://github.com/hamidr/pipe" }   # SSE, WebSocket
-pipe-grpc = { git = "https://github.com/hamidr/pipe" }   # gRPC streaming
+lazyflow-io = { git = "https://github.com/hamidr/lazyflow" }    # File, TCP, UDP
+lazyflow-http = { git = "https://github.com/hamidr/lazyflow" }   # SSE, WebSocket
+lazyflow-grpc = { git = "https://github.com/hamidr/lazyflow" }   # gRPC streaming
 ```
 
 Requires **Tokio** as the async runtime.
@@ -84,7 +84,7 @@ let results = Pipe::merge(branches
 ### TCP echo server
 
 ```rust
-use pipe_io::net;
+use lazyflow_io::net;
 
 net::tcp_server("0.0.0.0:8080".parse()?)
     .map(|conn| {
@@ -105,7 +105,7 @@ net::tcp_server("0.0.0.0:8080".parse()?)
 ### SSE consumer
 
 ```rust
-use pipe_http::sse;
+use lazyflow_http::sse;
 
 sse::connect("https://example.com/events")
     .filter(|e| e.event.as_deref() == Some("update"))
@@ -119,7 +119,7 @@ Auto-reconnects with exponential backoff and Last-Event-ID resume.
 ### WebSocket
 
 ```rust
-use pipe_http::ws;
+use lazyflow_http::ws;
 
 let (incoming, sender) = ws::connect("wss://example.com/ws");
 
@@ -139,7 +139,7 @@ Lazy connection, cloneable sender, automatic ping/pong, 16 MiB message limit.
 ### gRPC streaming
 
 ```rust
-use pipe_grpc::streaming;
+use lazyflow_grpc::streaming;
 
 let response = client.server_stream(Request::new(req)).await?;
 let events: Pipe<MyResponse> = streaming::from_tonic(response.into_inner());
@@ -348,11 +348,11 @@ async fn double(x: i64) -> i64 { x * 2 }
 
 | Crate | Description |
 |-------|-------------|
-| `pipe` | Core streaming engine |
-| `pipe-macros` | Proc macros: `#[operator]`, `#[pull_operator]`, `#[pipe_fn]` |
-| `pipe-io` | File, TCP, UDP constructors |
-| `pipe-http` | SSE source, WebSocket source/sink |
-| `pipe-grpc` | gRPC streaming source, server response adapter |
+| `lazyflow` | Core streaming engine |
+| `lazyflow-macros` | Proc macros: `#[operator]`, `#[pull_operator]`, `#[pipe_fn]` |
+| `lazyflow-io` | File, TCP, UDP constructors |
+| `lazyflow-http` | SSE source, WebSocket source/sink |
+| `lazyflow-grpc` | gRPC streaming source, server response adapter |
 
 ## License
 

@@ -8,7 +8,7 @@
 //! clones returns an error (same as `Pipe::generate_once`).
 //!
 //! ```ignore
-//! use pipe_http::sse;
+//! use lazyflow_http::sse;
 //!
 //! sse::connect("https://example.com/events")
 //!     .filter(|e| e.event.as_deref() == Some("update"))
@@ -18,8 +18,8 @@
 
 use std::time::Duration;
 
-use pipe::pipeline::Pipe;
-use pipe::pull::PipeError;
+use lazyflow::pipeline::Pipe;
+use lazyflow::pull::PipeError;
 
 /// Maximum bytes to buffer before seeing a newline. Prevents OOM from
 /// a malicious server sending data without line breaks.
@@ -160,7 +160,7 @@ pub fn connect_with(config: SseConfig) -> Pipe<SseEvent> {
 
 /// Read and parse the SSE event stream from an HTTP response.
 async fn read_event_stream(
-    tx: &pipe::pipeline::Emitter<SseEvent>,
+    tx: &lazyflow::pipeline::Emitter<SseEvent>,
     response: reqwest::Response,
     last_event_id: &mut Option<String>,
     reconnect_delay: &mut Duration,

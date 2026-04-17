@@ -12,7 +12,7 @@ streaming source (`streaming::from_tonic`) and the server-side response
 adapter (`serve::to_stream`) are both implemented and in use. The serve
 module was added opportunistically -- it was small and immediately useful.
 
-In practice (validated by knot-server, a graph database using pipe-grpc),
+In practice (validated by knot-server, a graph database using lazyflow-grpc),
 the server-side pattern works but requires significant tonic boilerplate:
 
 1. **Service trait implementation**: Users must implement tonic's generated
@@ -28,24 +28,24 @@ the server-side pattern works but requires significant tonic boilerplate:
    `pipe_error_to_status` to unwrap them. The round-trip works but
    is indirect.
 
-4. **Unary RPCs get no benefit**: Only streaming RPCs use pipe today.
-   The 5 unary RPCs in knot-server are plain `async fn` -- pipe adds
+4. **Unary RPCs get no benefit**: Only streaming RPCs use lazyflow today.
+   The 5 unary RPCs in knot-server are plain `async fn` -- lazyflow adds
    nothing there.
 
-The current architecture is correct but split: pipe-grpc is an adapter
+The current architecture is correct but split: lazyflow-grpc is an adapter
 between two worlds rather than a cohesive abstraction. Users must
-understand both tonic's API and pipe's API in full.
+understand both tonic's API and lazyflow's API in full.
 
 ### What a server handler layer would provide
 
 A thin declarative layer over tonic that lets users define gRPC services
-in terms of pipe primitives:
+in terms of lazyflow primitives:
 
-| Today (tonic + pipe-grpc) | Proposed (pipe-grpc server) |
+| Today (tonic + lazyflow-grpc) | Proposed (lazyflow-grpc server) |
 |---------------------------|----------------------------|
 | Implement generated `#[tonic::async_trait]` trait | Declare handlers as closures/functions |
 | `type QueryStream = serve::PipeResponse<T>` | Implicit -- streaming handlers return `Pipe<T>` |
-| Manual `Server::builder().tls_config(...)` | `pipe_grpc::Server::builder().tls(cert, key)` |
+| Manual `Server::builder().tls_config(...)` | `lazyflow_grpc::Server::builder().tls(cert, key)` |
 | Manual interceptor wiring | `.interceptor(fn)` on builder |
 | `serve::to_stream(pipe)` at each call site | Automatic for streaming handlers |
 | `pipe_error_to_status` for error mapping | Built into the handler contract |
@@ -67,16 +67,16 @@ Two extremes:
 | Approach | Pros | Cons |
 |----------|------|------|
 | Thin builder over tonic | Small API surface, easy to maintain, tonic upgrades are mechanical | Users still see tonic types (Request, Response, Status) |
-| Full framework hiding tonic | Clean pipe-only API, no tonic in user code | Large API surface, version coupling, reimplements tonic features |
+| Full framework hiding tonic | Clean lazyflow-only API, no tonic in user code | Large API surface, version coupling, reimplements tonic features |
 
 Decision: thin wrapper. tonic is good at what it does (transport, codegen,
-HTTP/2). pipe-grpc should eliminate boilerplate, not replace tonic's
+HTTP/2). lazyflow-grpc should eliminate boilerplate, not replace tonic's
 internals. Users who need advanced tonic features (custom codecs, Tower
 layers, health checks) can drop down to tonic directly.
 
 ## Decision
 
-Extend pipe-grpc's `serve` module with a server builder API. Tonic
+Extend lazyflow-grpc's `serve` module with a server builder API. Tonic
 remains the transport layer. The builder wraps `tonic::transport::Server`
 and accepts standard tonic services for serving.
 
@@ -85,7 +85,7 @@ and accepts standard tonic services for serving.
 **Server builder**:
 
 ```rust
-use pipe_grpc::serve;
+use lazyflow_grpc::serve;
 
 let server = serve::Server::builder()
     .tls(cert_pem, key_pem)
@@ -106,7 +106,7 @@ builder and use tonic directly with `serve::to_stream`.
 **What this does NOT include**:
 
 - Proto codegen -- users still run `tonic-build` and get the generated
-  service trait. pipe-grpc's builder wraps the tonic service, not
+  service trait. lazyflow-grpc's builder wraps the tonic service, not
   replaces it.
 - Handler traits or routing -- the generated tonic trait already defines
   the routing. Users implement it as before. A macro that generates the
@@ -153,7 +153,7 @@ serve::Server::builder()
 Handler traits that formalize the two RPC patterns:
 
 ```rust
-/// Streaming RPC: request in, pipe of responses out.
+/// Streaming RPC: request in, lazyflow pipe of responses out.
 pub trait StreamingHandler<Req, Resp>: Send + Sync + 'static {
     fn handle(&self, req: Request<Req>) -> Result<Pipe<Resp>, Status>;
 }
@@ -171,7 +171,7 @@ And a proc macro that generates the tonic trait impl from handler
 closures, eliminating the async_trait boilerplate entirely:
 
 ```rust
-pipe_grpc::service! {
+lazyflow_grpc::service! {
     proto: my_proto::my_service_server::MyService,
 
     // Streaming RPC: return Pipe<T>
@@ -196,7 +196,7 @@ This is deferred because:
 
 ### Not in scope
 
-- **Replacing tonic**: pipe-grpc is a convenience layer over tonic,
+- **Replacing tonic**: lazyflow-grpc is a convenience layer over tonic,
   not a replacement. Dropping tonic would require reimplementing HTTP/2
   transport, gRPC framing, protobuf codegen integration, service
   routing, metadata/trailers, and status codes -- roughly the entirety
@@ -204,11 +204,11 @@ This is deferred because:
   transport, routing, wire format). This is a deliberate choice: tonic
   is mature and well-maintained; duplicating it would be high cost for
   no architectural benefit.
-- **Custom codecs**: pipe-grpc uses tonic's default prost codec.
+- **Custom codecs**: lazyflow-grpc uses tonic's default prost codec.
   Alternative codecs (flatbuffers, bincode) are tonic-level concerns.
 - **Load balancing / discovery**: tonic's Channel handles this.
 - **Health checks / reflection**: tonic provides these as optional
-  Tower layers. pipe-grpc's builder should forward them, not reimplement.
+  Tower layers. lazyflow-grpc's builder should forward them, not reimplement.
 - **Client-streaming / bidi handlers**: Server-side receipt of client
   streams as `Pipe<T>`. Natural extension but deferred until the
   server builder API is validated with unary + server-streaming.
@@ -218,7 +218,7 @@ This is deferred because:
 ### Positive
 
 - Eliminates ~60 lines of server bootstrap boilerplate per service
-- Establishes pipe-grpc as a cohesive server framework, not just an
+- Establishes lazyflow-grpc as a cohesive server framework, not just an
   adapter library
 - tonic remains the transport -- no reimplementation, no version fork
 - Streaming and unary handlers share a consistent builder API
@@ -229,10 +229,10 @@ This is deferred because:
 ### Negative
 
 - Another abstraction layer over tonic -- users debugging transport
-  issues must look through pipe-grpc to tonic. Mitigated by keeping
+  issues must look through lazyflow-grpc to tonic. Mitigated by keeping
   the layer thin and transparent (builder just delegates).
 - Server builder duplicates tonic's `Server::builder` surface. If
-  tonic adds new configuration options, pipe-grpc must forward them.
+  tonic adds new configuration options, lazyflow-grpc must forward them.
   Mitigated by exposing an escape hatch (`into_tonic_builder()`).
 - Phase 2 macro is speculative. If Phase 1 proves sufficient, the
   macro may never be needed. This is acceptable -- deferral is the
@@ -241,11 +241,11 @@ This is deferred because:
 ### Risks
 
 - **tonic version coupling**: The builder wraps tonic's `Server` type.
-  tonic 0.12 -> 0.13 breaking changes would require pipe-grpc updates.
+  tonic 0.12 -> 0.13 breaking changes would require lazyflow-grpc updates.
   Mitigation: same as ADR-003 -- pin minor version, keep wrapper thin.
 - **Feature creep**: Pressure to add every tonic feature to the builder
   (connection limits, keepalive, HTTP/2 tuning). Mitigation: expose
-  `into_tonic_builder()` for advanced use and keep the pipe-grpc
+  `into_tonic_builder()` for advanced use and keep the lazyflow-grpc
   builder minimal (TLS, interceptor, graceful shutdown).
 - **Macro complexity** (Phase 2): Proc macros over tonic-generated
   code may break on tonic version bumps if generated trait signatures

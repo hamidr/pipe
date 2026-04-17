@@ -1,6 +1,6 @@
 //! Generic async pipeline engine -- composable, typed, pull-based data flows.
 //!
-//! `pipe` provides a lazy effectful list (`Pipe<B>`, analogous to
+//! `lazyflow` provides a lazy effectful list (`Pipe<B>`, analogous to
 //! FS2's `Stream[F, O]`) and per-element operators. It can power any domain:
 //! data processing, HTTP middleware, ML inference, event streaming.
 //!
@@ -9,7 +9,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use pipe::prelude::*;
+//! use lazyflow::prelude::*;
 //!
 //! let result = Pipe::from_iter(1..=10)
 //!     .map(|x| x * 2)
@@ -49,7 +49,7 @@ pub mod topic;
 pub mod transform;
 
 pub use operator::PipeResult;
-pub use pipe_macros::{operator, pipe_fn, pull_operator};
+pub use lazyflow_macros::{operator, pipe_fn, pull_operator};
 
 /// Construct a `Pipe` from literal elements.
 ///

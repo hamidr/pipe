@@ -1,7 +1,7 @@
 //! TCP and UDP constructors.
 //!
 //! ```ignore
-//! use pipe_io::net;
+//! use lazyflow_io::net;
 //!
 //! // TCP server: each connection becomes a pipe
 //! net::tcp_server("0.0.0.0:8080".parse()?)
@@ -23,8 +23,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use pipe::pipeline::Pipe;
-use pipe::pull::PipeError;
+use lazyflow::pipeline::Pipe;
+use lazyflow::pull::PipeError;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Mutex;

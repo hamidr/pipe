@@ -5,7 +5,7 @@ use axum::Router;
 use axum::extract::WebSocketUpgrade;
 use axum::extract::ws::{Message, WebSocket};
 use axum::routing::get;
-use pipe_http::ws::{self, WsMessage};
+use lazyflow_http::ws::{self, WsMessage};
 
 async fn start_server(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

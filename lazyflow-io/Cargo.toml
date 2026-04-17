@@ -1,15 +1,15 @@
 [package]
-name = "pipe-io"
+name = "lazyflow-io"
 version = "0.6.2"
 edition = "2024"
 rust-version = "1.85"
-description = "I/O constructors for pipe -- TCP, UDP, and file convenience APIs"
+description = "I/O constructors for lazyflow -- TCP, UDP, and file convenience APIs"
 license = "MIT"
-repository = "https://github.com/hamidr/pipe"
+repository = "https://github.com/hamidr/lazyflow"
 keywords = ["async", "streaming", "tcp", "udp", "file-io"]
 categories = ["asynchronous", "network-programming"]
 exclude = [".github/"]
 
 [dependencies]
-pipe = { path = "..", version = "0.6.2" }
+lazyflow = { path = "..", version = "0.6.2" }
 tokio = { version = "1", features = ["net", "fs", "io-util", "rt"] }

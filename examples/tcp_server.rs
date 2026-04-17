@@ -1,10 +1,10 @@
 use std::net::SocketAddr;
 
-use pipe::pipeline::Pipe;
-use pipe::pull::PipeError;
-use pipe::topic::Topic;
-use pipe::{operator, pipe_fn};
-use pipe_io::net::{self, TcpConnection, TcpWriter};
+use lazyflow::pipeline::Pipe;
+use lazyflow::pull::PipeError;
+use lazyflow::topic::Topic;
+use lazyflow::{operator, pipe_fn};
+use lazyflow_io::net::{self, TcpConnection, TcpWriter};
 
 type ChatMsg = (SocketAddr, String);
 

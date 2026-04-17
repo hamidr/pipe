@@ -1,8 +1,8 @@
-//! I/O constructors for `pipe` -- ergonomic sources and sinks for
+//! I/O constructors for `lazyflow` -- ergonomic sources and sinks for
 //! files, TCP, and UDP.
 //!
 //! ```ignore
-//! use pipe_io::net;
+//! use lazyflow_io::net;
 //!
 //! net::tcp_server("0.0.0.0:8080".parse()?)
 //!     .map(|conn| {

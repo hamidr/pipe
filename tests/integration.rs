@@ -1,6 +1,6 @@
 //! Complex integration tests exercising multiple pipe features together.
 
-use pipe::prelude::*;
+use lazyflow::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -113,7 +113,7 @@ async fn error_recovery_chain() {
 /// Attempt: catch errors as elements instead of stopping
 #[tokio::test]
 async fn attempt_catches_error_as_element() {
-    use pipe::pull::{ChunkFut, PullOperator};
+    use lazyflow::pull::{ChunkFut, PullOperator};
 
     // Source that yields [1, 2], then errors, simulating a flaky source
     struct FlakySource {
@@ -316,7 +316,7 @@ async fn cancel_mid_stream() {
 /// Meter: observe pipeline stats
 #[tokio::test]
 async fn meter_observes_throughput() {
-    use pipe::meter::MeterStats;
+    use lazyflow::meter::MeterStats;
     use std::sync::Mutex;
 
     let stats_log = Arc::new(Mutex::new(Vec::<MeterStats>::new()));
@@ -400,7 +400,7 @@ async fn par_join_limits_concurrency() {
         .map(move |i| {
             let active = active2.clone();
             let max_seen = max_seen2.clone();
-            pipe::pipe_gen_once!(tx => {
+            lazyflow::pipe_gen_once!(tx => {
                 let prev = active.fetch_add(1, Ordering::SeqCst) + 1;
                 max_seen.fetch_max(prev, Ordering::SeqCst);
                 tokio::task::yield_now().await;
@@ -426,7 +426,7 @@ async fn par_join_limits_concurrency() {
 /// par_join propagates errors from inner pipes (fail-fast)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn par_join_propagates_inner_error() {
-    use pipe::pull::PipeError;
+    use lazyflow::pull::PipeError;
 
     let result = Pipe::from_iter(0..5i64)
         .map(|i| {
@@ -454,7 +454,7 @@ async fn par_join_propagates_inner_error() {
 /// par_join propagates errors from outer pipe
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn par_join_propagates_outer_error() {
-    use pipe::pull::PipeError;
+    use lazyflow::pull::PipeError;
 
     // Outer pipe: emit one inner pipe then error
     let result =

@@ -1,8 +1,7 @@
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::time::Duration;
 
-use tokio_stream::Stream;
+use lazyflow::pipeline::Pipe;
 use tonic::{Request, Response, Status};
 
 pub mod pipe_grpc_test {
@@ -14,32 +13,22 @@ use pipe_grpc_test::test_streaming_server::{TestStreaming, TestStreamingServer};
 use pipe_grpc_test::{StreamItem, StreamRequest};
 
 #[derive(Default)]
-struct TestService;
+struct PipeBackedService;
 
 #[tonic::async_trait]
-impl TestStreaming for TestService {
-    type ServerStreamStream = Pin<Box<dyn Stream<Item = Result<StreamItem, Status>> + Send>>;
+impl TestStreaming for PipeBackedService {
+    type ServerStreamStream = lazyflow_grpc::serve::PipeResponse<StreamItem>;
 
     async fn server_stream(
         &self,
         request: Request<StreamRequest>,
     ) -> Result<Response<Self::ServerStreamStream>, Status> {
         let count = request.into_inner().count;
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-        tokio::spawn(async move {
-            for i in 0..count {
-                let item = StreamItem {
-                    value: i,
-                    label: format!("item-{i}"),
-                };
-                if tx.send(Ok(item)).await.is_err() {
-                    break;
-                }
-            }
+        let pipe = Pipe::from_iter(0..count).map(move |i| StreamItem {
+            value: i,
+            label: format!("item-{i}"),
         });
-        Ok(Response::new(Box::pin(
-            tokio_stream::wrappers::ReceiverStream::new(rx),
-        )))
+        Ok(Response::new(lazyflow_grpc::serve::to_stream(pipe)))
     }
 }
 
@@ -48,7 +37,7 @@ async fn start_server() -> SocketAddr {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         tonic::transport::Server::builder()
-            .add_service(TestStreamingServer::new(TestService))
+            .add_service(TestStreamingServer::new(PipeBackedService))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
             .unwrap();
@@ -58,7 +47,7 @@ async fn start_server() -> SocketAddr {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn collect_all_items() {
+async fn pipe_backed_server_streams_all_items() {
     let addr = start_server().await;
     let mut client = TestStreamingClient::connect(format!("http://{addr}"))
         .await
@@ -69,7 +58,7 @@ async fn collect_all_items() {
         .await
         .unwrap();
 
-    let items: Vec<StreamItem> = pipe_grpc::streaming::from_tonic(response.into_inner())
+    let items: Vec<StreamItem> = lazyflow_grpc::streaming::from_tonic(response.into_inner())
         .collect()
         .await
         .unwrap();
@@ -82,50 +71,7 @@ async fn collect_all_items() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pipe_operators_compose() {
-    let addr = start_server().await;
-    let mut client = TestStreamingClient::connect(format!("http://{addr}"))
-        .await
-        .unwrap();
-
-    let response = client
-        .server_stream(Request::new(StreamRequest { count: 10 }))
-        .await
-        .unwrap();
-
-    let evens: Vec<i32> = pipe_grpc::streaming::from_tonic(response.into_inner())
-        .map(|item| item.value)
-        .filter(|v| *v % 2 == 0)
-        .collect()
-        .await
-        .unwrap();
-
-    assert_eq!(evens, vec![0, 2, 4, 6, 8]);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn take_cancels_early() {
-    let addr = start_server().await;
-    let mut client = TestStreamingClient::connect(format!("http://{addr}"))
-        .await
-        .unwrap();
-
-    let response = client
-        .server_stream(Request::new(StreamRequest { count: 10000 }))
-        .await
-        .unwrap();
-
-    let items: Vec<StreamItem> = pipe_grpc::streaming::from_tonic(response.into_inner())
-        .take(3)
-        .collect()
-        .await
-        .unwrap();
-
-    assert_eq!(items.len(), 3);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn empty_stream() {
+async fn pipe_backed_server_handles_empty() {
     let addr = start_server().await;
     let mut client = TestStreamingClient::connect(format!("http://{addr}"))
         .await
@@ -136,7 +82,7 @@ async fn empty_stream() {
         .await
         .unwrap();
 
-    let items: Vec<StreamItem> = pipe_grpc::streaming::from_tonic(response.into_inner())
+    let items: Vec<StreamItem> = lazyflow_grpc::streaming::from_tonic(response.into_inner())
         .collect()
         .await
         .unwrap();
@@ -145,9 +91,74 @@ async fn empty_stream() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn error_maps_to_pipe_error() {
-    let status = tonic::Status::not_found("gone");
-    let err = pipe_grpc::streaming::status_to_pipe_error(status);
-    let msg = err.to_string();
-    assert!(msg.contains("gone"), "expected 'gone' in: {msg}");
+async fn pipe_backed_server_with_filter() {
+    let addr = start_server().await;
+    let mut client = TestStreamingClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    let response = client
+        .server_stream(Request::new(StreamRequest { count: 10 }))
+        .await
+        .unwrap();
+
+    let evens: Vec<i32> = lazyflow_grpc::streaming::from_tonic(response.into_inner())
+        .map(|item| item.value)
+        .filter(|v| *v % 2 == 0)
+        .collect()
+        .await
+        .unwrap();
+
+    assert_eq!(evens, vec![0, 2, 4, 6, 8]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_take_cancels_server_pipe() {
+    let addr = start_server().await;
+    let mut client = TestStreamingClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    let response = client
+        .server_stream(Request::new(StreamRequest { count: 10000 }))
+        .await
+        .unwrap();
+
+    let items: Vec<StreamItem> = lazyflow_grpc::streaming::from_tonic(response.into_inner())
+        .take(3)
+        .collect()
+        .await
+        .unwrap();
+
+    assert_eq!(items.len(), 3);
+}
+
+#[tokio::test]
+async fn pipe_error_to_status_roundtrip() {
+    let original = tonic::Status::permission_denied("forbidden");
+    let pipe_err = lazyflow_grpc::streaming::status_to_pipe_error(original);
+    let recovered = lazyflow_grpc::serve::pipe_error_to_status(pipe_err);
+    assert_eq!(recovered.code(), tonic::Code::PermissionDenied);
+    assert!(recovered.message().contains("forbidden"));
+}
+
+#[tokio::test]
+async fn pipe_error_io_maps_to_internal() {
+    let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken");
+    let pipe_err = lazyflow::pull::PipeError::Io(io_err);
+    let status = lazyflow_grpc::serve::pipe_error_to_status(pipe_err);
+    assert_eq!(status.code(), tonic::Code::Internal);
+    assert!(status.message().contains("broken"));
+}
+
+#[tokio::test]
+async fn pipe_error_closed_maps_to_cancelled() {
+    let status = lazyflow_grpc::serve::pipe_error_to_status(lazyflow::pull::PipeError::Closed);
+    assert_eq!(status.code(), tonic::Code::Cancelled);
+}
+
+#[tokio::test]
+async fn pipe_error_retry_exhausted_maps_to_unavailable() {
+    let status = lazyflow_grpc::serve::pipe_error_to_status(lazyflow::pull::PipeError::RetryExhausted);
+    assert_eq!(status.code(), tonic::Code::Unavailable);
 }

@@ -1,7 +1,7 @@
-//! HTTP connectors for `pipe` -- SSE sources and HTTP sinks.
+//! HTTP connectors for `lazyflow` -- SSE sources and HTTP sinks.
 //!
 //! ```ignore
-//! use pipe_http::sse;
+//! use lazyflow_http::sse;
 //!
 //! let events = sse::connect("https://example.com/events");
 //! events

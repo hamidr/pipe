@@ -1,7 +1,7 @@
 //! File I/O constructors.
 //!
 //! ```ignore
-//! use pipe_io::file;
+//! use lazyflow_io::file;
 //!
 //! let pipe = file::lines("input.txt");
 //! let result = pipe.map(|l| l.to_uppercase()).collect().await?;
@@ -9,8 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
-use pipe::pipeline::Pipe;
-use pipe::pull::{ChunkFut, PullOperator};
+use lazyflow::pipeline::Pipe;
+use lazyflow::pull::{ChunkFut, PullOperator};
 use tokio::io::AsyncReadExt;
 
 /// Lazy file reader that opens the file on first pull.

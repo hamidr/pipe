@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use pipe::pipeline::Pipe;
+use lazyflow::pipeline::Pipe;
 
 const N: usize = 100_000;
 

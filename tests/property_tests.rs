@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 
-use pipe::pipeline::Pipe;
+use lazyflow::pipeline::Pipe;
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()

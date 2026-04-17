@@ -1,21 +1,21 @@
 //! SSE consumer example.
 //!
 //! Connects to an SSE endpoint, filters for specific event types, and
-//! prints them. Demonstrates pipe-http SSE source with pipe operators.
+//! prints them. Demonstrates lazyflow-http SSE source with lazyflow operators.
 //!
 //! Usage:
-//!   cargo run -p pipe-http --example sse_consumer -- <url> [event-type]
+//!   cargo run -p lazyflow-http --example sse_consumer -- <url> [event-type]
 //!
 //! Examples:
-//!   cargo run -p pipe-http --example sse_consumer -- https://stream.wikimedia.org/v2/stream/recentchange
-//!   cargo run -p pipe-http --example sse_consumer -- https://stream.wikimedia.org/v2/stream/recentchange message
+//!   cargo run -p lazyflow-http --example sse_consumer -- https://stream.wikimedia.org/v2/stream/recentchange
+//!   cargo run -p lazyflow-http --example sse_consumer -- https://stream.wikimedia.org/v2/stream/recentchange message
 
 use std::time::Duration;
 
-use pipe_http::sse::{self, SseConfig};
+use lazyflow_http::sse::{self, SseConfig};
 
 #[tokio::main]
-async fn main() -> Result<(), pipe::pull::PipeError> {
+async fn main() -> Result<(), lazyflow::pull::PipeError> {
     let args: Vec<String> = std::env::args().collect();
     let url = args.get(1).expect("Usage: sse_consumer <url> [event-type]");
     let event_filter = args.get(2).cloned();

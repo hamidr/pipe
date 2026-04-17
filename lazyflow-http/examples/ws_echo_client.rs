@@ -1,20 +1,20 @@
 //! WebSocket echo client example.
 //!
 //! Connects to a WebSocket server, sends messages, and prints echoed
-//! replies. Demonstrates bidirectional communication with pipe-http.
+//! replies. Demonstrates bidirectional communication with lazyflow-http.
 //!
 //! Usage:
-//!   cargo run -p pipe-http --example ws_echo_client -- <url>
+//!   cargo run -p lazyflow-http --example ws_echo_client -- <url>
 //!
 //! Test with a public echo server:
-//!   cargo run -p pipe-http --example ws_echo_client -- wss://echo.websocket.org
+//!   cargo run -p lazyflow-http --example ws_echo_client -- wss://echo.websocket.org
 
 use std::time::Duration;
 
-use pipe_http::ws;
+use lazyflow_http::ws;
 
 #[tokio::main]
-async fn main() -> Result<(), pipe::pull::PipeError> {
+async fn main() -> Result<(), lazyflow::pull::PipeError> {
     let url = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "wss://echo.websocket.org".into());

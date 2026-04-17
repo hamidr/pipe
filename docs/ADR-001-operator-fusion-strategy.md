@@ -5,7 +5,7 @@
 
 ## Context
 
-Pipe's operator composition model uses `Box<dyn PullOperator<B>>` for each
+Lazyflow's operator composition model uses `Box<dyn PullOperator<B>>` for each
 operator in the chain. Every `.map()`, `.filter()`, `.take()` etc. wraps the
 parent factory in a new closure that constructs a boxed operator at
 materialization time.
@@ -75,7 +75,7 @@ approach.
   chains.
 - **Gains**: Full query-engine-class optimizations. Predicate pushdown,
   projection elimination, cross-operator rewriting.
-- **Limitation**: Only justified if pipe evolves toward a streaming query
+- **Limitation**: Only justified if lazyflow evolves toward a streaming query
   engine competing with DataFusion.
 
 ## Decision
@@ -121,7 +121,7 @@ This is additive -- no changes to existing operators or architecture.
 
 Strategy C (staged compilation) is deferred until there is a concrete
 use case requiring cross-operator optimization beyond local fusion pairs.
-The trigger would be: pipe is used as a streaming query engine with
+The trigger would be: lazyflow is used as a streaming query engine with
 user-defined query plans, not just programmatic pipeline construction.
 
 ## Consequences
@@ -175,6 +175,6 @@ user-defined query plans, not just programmatic pipeline construction.
 - **Full monomorphization** (generics all the way down): Would require a
   completely different architecture. Loses dynamic composition, the
   clone-and-materialize pattern, and runtime pipeline construction.
-  Fundamentally incompatible with pipe's design.
+  Fundamentally incompatible with lazyflow's design.
 - **JIT compilation**: No stable Rust story. Massive complexity for
   marginal gains over batch processing + autovectorization.

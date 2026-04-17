@@ -982,6 +982,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazyflow"
+version = "0.6.2"
+dependencies = [
+ "criterion",
+ "futures-core",
+ "lazyflow-io",
+ "lazyflow-macros",
+ "proptest",
+ "tokio",
+ "tokio-test",
+]
+
+[[package]]
+name = "lazyflow-grpc"
+version = "0.1.0"
+dependencies = [
+ "futures-core",
+ "lazyflow",
+ "prost",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "lazyflow-http"
+version = "0.6.2"
+dependencies = [
+ "axum 0.8.8",
+ "futures-core",
+ "futures-util",
+ "lazyflow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+]
+
+[[package]]
+name = "lazyflow-io"
+version = "0.6.2"
+dependencies = [
+ "lazyflow",
+ "tokio",
+]
+
+[[package]]
+name = "lazyflow-macros"
+version = "0.6.2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1120,64 +1178,6 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
-
-[[package]]
-name = "pipe"
-version = "0.6.2"
-dependencies = [
- "criterion",
- "futures-core",
- "pipe-io",
- "pipe-macros",
- "proptest",
- "tokio",
- "tokio-test",
-]
-
-[[package]]
-name = "pipe-grpc"
-version = "0.1.0"
-dependencies = [
- "futures-core",
- "pipe",
- "prost",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-build",
-]
-
-[[package]]
-name = "pipe-http"
-version = "0.6.2"
-dependencies = [
- "axum 0.8.8",
- "futures-core",
- "futures-util",
- "pipe",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.26.2",
-]
-
-[[package]]
-name = "pipe-io"
-version = "0.6.2"
-dependencies = [
- "pipe",
- "tokio",
-]
-
-[[package]]
-name = "pipe-macros"
-version = "0.6.2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "plotters"

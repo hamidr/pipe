@@ -11,7 +11,7 @@
 //! `handle_error_with()` for application-level reconnection.
 //!
 //! ```ignore
-//! use pipe_http::ws;
+//! use lazyflow_http::ws;
 //!
 //! let (incoming, sender) = ws::connect("wss://example.com/ws");
 //!
@@ -29,8 +29,8 @@
 
 use std::sync::Arc;
 
-use pipe::pipeline::Pipe;
-use pipe::pull::PipeError;
+use lazyflow::pipeline::Pipe;
+use lazyflow::pull::PipeError;
 
 /// Maximum incoming message size: 16 MiB. Prevents OOM from oversized frames.
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;

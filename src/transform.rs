@@ -5,7 +5,7 @@
 //! transforms can be named, stored, cloned, and composed.
 //!
 //! ```ignore
-//! use pipe::{Pipe, Transform};
+//! use lazyflow::{Pipe, Transform};
 //!
 //! let t = Transform::new(|p: Pipe<i64>| p.filter(|x| x % 2 == 0).map(|x| x * 10));
 //! let u = Transform::new(|p: Pipe<i64>| p.take(3));

@@ -6,7 +6,7 @@
 //! ```ignore
 //! use tokio::fs::File;
 //! use tokio::net::TcpStream;
-//! use pipe::prelude::*;
+//! use lazyflow::prelude::*;
 //!
 //! // File -> uppercase -> TCP
 //! let reader = File::open("input.txt").await?;

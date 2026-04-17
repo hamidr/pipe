@@ -1,11 +1,11 @@
 [package]
-name = "pipe-macros"
+name = "lazyflow-macros"
 version = "0.6.2"
 edition = "2024"
 rust-version = "1.85"
-description = "Procedural macros for pipe -- #[operator], #[pull_operator], #[pipe_fn]"
+description = "Procedural macros for lazyflow -- #[operator], #[pull_operator], #[pipe_fn]"
 license = "MIT"
-repository = "https://github.com/hamidr/pipe"
+repository = "https://github.com/hamidr/lazyflow"
 keywords = ["async", "streaming", "pipeline", "proc-macro"]
 categories = ["asynchronous"]
 

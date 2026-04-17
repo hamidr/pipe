@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the pipe workspace are documented here.
+All notable changes to the lazyflow workspace are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
@@ -10,7 +10,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - GitHub Actions CI workflow (fmt, clippy, test on Linux + macOS via Nix)
 - Criterion benchmark suite for core operators (map, filter, flat_map, chunks, fold, merge)
 - CHANGELOG.md covering full version history
-- pipe-grpc in README: install instructions, streaming example, crate ecosystem table
+- lazyflow-grpc in README: install instructions, streaming example, crate ecosystem table
 
 ### Changed
 - Synced ADR statuses and TRACKER.md with shipped work
@@ -19,8 +19,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.6.0] - 2026-04-11
 
 ### Added
-- **pipe-grpc** crate (v0.1.0): tonic `Streaming<T>` source, server response adapter, TLS/mTLS server builder
-- Re-exported tonic types from pipe-grpc so users don't need a direct tonic dependency
+- **lazyflow-grpc** crate (v0.1.0): tonic `Streaming<T>` source, server response adapter, TLS/mTLS server builder
+- Re-exported tonic types from lazyflow-grpc so users don't need a direct tonic dependency
 
 ### Changed
 - Rewrote README for clarity and narrative flow
@@ -28,7 +28,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.5.1] - 2026-04-11
 
 ### Added
-- WebSocket source + sink in pipe-http (lazy connect, cloneable sender, automatic ping/pong)
+- WebSocket source + sink in lazyflow-http (lazy connect, cloneable sender, automatic ping/pong)
 
 ### Fixed
 - WebSocket implementation: lazy connect, channel-based sender, safety improvements
@@ -37,7 +37,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.5.0] - 2026-04-11
 
 ### Added
-- **pipe-http** crate: SSE source with auto-reconnect, exponential backoff, Last-Event-ID resume
+- **lazyflow-http** crate: SSE source with auto-reconnect, exponential backoff, Last-Event-ID resume
 - ADR-001: operator fusion strategy (deferred)
 - ADR-002: connector strategy (SSE -> WebSocket -> brokers)
 
@@ -97,7 +97,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.2.0] - 2026-04-11
 
 ### Added
-- pipe!, pipe_gen!, #[operator], #[pull_operator] macros (pipe-macros crate)
+- pipe!, pipe_gen!, #[operator], #[pull_operator] macros (lazyflow-macros crate)
 - CancelToken for cooperative graceful shutdown
 - meter_with combinator for observability
 - concurrently combinator
@@ -127,5 +127,5 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Terminals: collect, fold, for_each, first, last, count, into_writer, into_stream
 - Concurrency: merge, broadcast, partition, prefetch
 - Error handling: handle_error_with, retry
-- pipe-io crate: file, TCP, UDP constructors
+- lazyflow-io crate: file, TCP, UDP constructors
 - Generic I/O adapters: AsyncRead source, AsyncWrite sink, lines

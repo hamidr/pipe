@@ -7,7 +7,7 @@ use axum::Router;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use futures_core::Stream;
-use pipe_http::sse::{self, SseConfig, SseEvent};
+use lazyflow_http::sse::{self, SseConfig, SseEvent};
 
 async fn start_server(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

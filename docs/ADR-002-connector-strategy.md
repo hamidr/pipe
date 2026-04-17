@@ -10,7 +10,7 @@
 Pipe has a capable streaming engine (pull-based backpressure, chunked
 execution, clone-and-materialize, cooperative cancellation, error
 recovery) but only connects to raw TCP, UDP, and local files via
-`pipe-io`. Nobody can build a production streaming service with pipe
+`lazyflow-io`. Nobody can build a production streaming service with lazyflow
 today because it doesn't talk to the systems production services talk
 to: HTTP APIs, WebSocket feeds, message brokers.
 
@@ -41,7 +41,7 @@ SSE is the smallest connector that exercises the most architecture:
    own pace, and TCP flow control propagates backpressure to the server.
 
 2. **Error recovery**: SSE has a built-in reconnection protocol
-   (`Last-Event-ID` header, `retry:` field). This validates pipe's
+   (`Last-Event-ID` header, `retry:` field). This validates lazyflow's
    `retry()` and `handle_error_with()` operators against a real
    reconnection scenario.
 
@@ -65,9 +65,9 @@ exactly-once, offset management) but:
 - Requires a running broker for every test run (Docker in CI)
 - Consumer group protocol is ~2000 lines of state machine logic
 - 80% of implementation time goes to Kafka protocol details, not
-  validating pipe's architecture
+  validating lazyflow's architecture
 - The rdkafka C library dependency adds cross-compilation pain
-- If pipe's architecture has a flaw (e.g., backpressure doesn't
+- If lazyflow's architecture has a flaw (e.g., backpressure doesn't
   compose through connectors), you want to discover it with a
   1-day SSE connector, not a 3-week Kafka connector
 
@@ -76,15 +76,15 @@ exactly-once, offset management) but:
 Build connectors in three phases. Each phase validates a progressively
 harder architectural property before committing to the next.
 
-### Phase 1: pipe-http crate (SSE source + HTTP sink)
+### Phase 1: lazyflow-http crate (SSE source + HTTP sink)
 
-New crate: `pipe-http`, depending on `pipe`, `reqwest` (HTTP client),
+New crate: `lazyflow-http`, depending on `lazyflow`, `reqwest` (HTTP client),
 and `hyper` (for the sink/server side, optional feature).
 
 **SSE source API**:
 
 ```rust
-use pipe_http::sse;
+use lazyflow_http::sse;
 
 // Basic: connect and stream events
 let events: Pipe<SseEvent> = sse::connect("https://api.example.com/events")
@@ -120,7 +120,7 @@ events
 **HTTP chunked sink API** (feature-gated behind `sink` feature):
 
 ```rust
-use pipe_http::sink;
+use lazyflow_http::sink;
 
 // Pipe<String> -> HTTP chunked response body
 // (for use inside an HTTP handler)
@@ -128,14 +128,14 @@ pipe.into_http_body()  // -> impl hyper::body::Body
 ```
 
 **What this validates**:
-- Backpressure from pipe consumer to HTTP/TCP layer
+- Backpressure from lazyflow consumer to HTTP/TCP layer
 - Reconnection with state (Last-Event-ID)
 - CancelToken/drop-based connection cleanup
-- Error propagation from network failures to pipe errors
+- Error propagation from network failures to lazyflow errors
 - Real-world SSE parsing (multi-line data, comments, retry fields)
 
 **Deliverables**:
-- `pipe-http` crate with `sse` module
+- `lazyflow-http` crate with `sse` module
 - SSE protocol parser (text/event-stream format)
 - Auto-reconnection with exponential backoff
 - Integration test against in-process test server
@@ -143,11 +143,11 @@ pipe.into_http_body()  // -> impl hyper::body::Body
 
 ### Phase 2: WebSocket source + sink
 
-Add `pipe-http::ws` module (or separate `pipe-ws` crate) using
+Add `lazyflow-http::ws` module (or separate `lazyflow-ws` crate) using
 `tokio-tungstenite`:
 
 ```rust
-use pipe_http::ws;
+use lazyflow_http::ws;
 
 // Bidirectional: source + sink from one connection
 let (incoming, outgoing_sink) = ws::connect("wss://stream.example.com")
@@ -171,14 +171,14 @@ incoming
 
 ### Phase 3: Message broker connectors (Kafka, NATS)
 
-Separate crates: `pipe-kafka`, `pipe-nats`. Only after Phase 1 and 2
-confirm that pipe's architecture composes correctly with real I/O.
+Separate crates: `lazyflow-kafka`, `lazyflow-nats`. Only after Phase 1 and 2
+confirm that lazyflow's architecture composes correctly with real I/O.
 
 **What this validates beyond WebSocket**:
 - Partitioned consumption (consumer groups, rebalancing)
 - Offset/ack management (at-least-once, exactly-once)
 - Durable subscriptions across process restarts
-- Multi-partition fan-out via pipe's `partition()` operator
+- Multi-partition fan-out via lazyflow's `partition()` operator
 
 **Deferred** until Phase 1 and 2 are shipped and have real users
 providing feedback on the connector API patterns.
@@ -195,15 +195,15 @@ providing feedback on the connector API patterns.
 - Zero new infrastructure required for Phase 1 development and CI
 - Real-world testing possible against public SSE endpoints (GitHub,
   Mastodon, etc.)
-- New `pipe-http` crate keeps the core `pipe` crate dependency-free
+- New `lazyflow-http` crate keeps the core `lazyflow` crate dependency-free
 
 ### Negative
 
 - reqwest dependency is heavy (~30 transitive deps). Mitigated by
-  keeping it in a separate crate -- core pipe is unaffected.
+  keeping it in a separate crate -- core lazyflow is unaffected.
 - SSE is a niche protocol. Not everyone needs it. But it's the
   cheapest way to validate the connector model.
-- Two-crate pattern (pipe-io for raw I/O, pipe-http for HTTP) may
+- Two-crate pattern (lazyflow-io for raw I/O, lazyflow-http for HTTP) may
   confuse users about where to find things. Clear documentation and
   a "connectors" section in README should address this.
 - Phase 3 is deferred with no timeline. Users wanting Kafka now have
@@ -213,7 +213,7 @@ providing feedback on the connector API patterns.
 
 ### Risks
 
-- reqwest's async runtime assumptions may conflict with pipe's
+- reqwest's async runtime assumptions may conflict with lazyflow's
   pull-based model. Mitigation: the SSE source runs reqwest in a
   spawned task, feeds a bounded channel, and the pipe pulls from
   the channel. This is the same pattern as `Pipe::generate()`.

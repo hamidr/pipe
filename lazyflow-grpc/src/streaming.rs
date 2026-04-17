@@ -8,8 +8,8 @@
 //! (unlike SSE's Last-Event-ID). Use pipe's `retry()` or
 //! `handle_error_with()` for application-level reconnection.
 
-use pipe::pipeline::Pipe;
-use pipe::pull::PipeError;
+use lazyflow::pipeline::Pipe;
+use lazyflow::pull::PipeError;
 
 /// Convert a tonic `Streaming<T>` into a `Pipe<T>`.
 ///
@@ -21,7 +21,7 @@ use pipe::pull::PipeError;
 ///
 /// ```ignore
 /// let response = client.server_stream(Request::new(req)).await?;
-/// let pipe = pipe_grpc::streaming::from_tonic(response.into_inner());
+/// let pipe = lazyflow_grpc::streaming::from_tonic(response.into_inner());
 /// let items = pipe.take(10).collect().await?;
 /// ```
 pub fn from_tonic<T>(stream: tonic::Streaming<T>) -> Pipe<T>

@@ -4,7 +4,7 @@
 //! return directly. Bridges pipe's `PipeError` to `tonic::Status`.
 //!
 //! ```ignore
-//! use pipe_grpc::serve;
+//! use lazyflow_grpc::serve;
 //!
 //! #[tonic::async_trait]
 //! impl MyService for MyServer {
@@ -26,8 +26,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use pipe::pipeline::Pipe;
-use pipe::pull::PipeError;
+use lazyflow::pipeline::Pipe;
+use lazyflow::pull::PipeError;
 
 /// A tonic-compatible response stream backed by a `Pipe<T>`.
 ///
@@ -36,7 +36,7 @@ use pipe::pull::PipeError;
 ///
 /// Created by [`to_stream`].
 pub struct PipeResponse<T: Send + 'static> {
-    inner: pipe::stream::PipeStream<T>,
+    inner: lazyflow::stream::PipeStream<T>,
 }
 
 impl<T: Send + 'static> Stream for PipeResponse<T> {
